@@ -1,0 +1,332 @@
+import copy
+import json
+from dataclasses import replace
+from datetime import UTC, date, datetime, timedelta
+from uuid import UUID
+
+import pytest
+
+from qotd.cli import Config
+from qotd.models import PublicationError, Quote, choose_quote, plain, rich_text
+from qotd.notion import UncertainCreate
+from qotd.publisher import publish, read_quotes, record_properties
+from qotd.render import SLOT_TYPES, render
+
+
+def id_(number):
+    return str(UUID(int=number))
+
+
+NOW = datetime(2026, 10, 16, 17, tzinfo=UTC)  # Shanghai: Oct 17, 01:00
+CONFIG = Config(
+    page_url_template="https://www.notion.so/{page_id}",
+    home_page_id=id_(100),
+    managed_block_id=id_(101),
+    quotes_data_source_id=id_(102),
+    daily_data_source_id=id_(103),
+)
+
+
+def make_quote(number):
+    return Quote(
+        id_(number),
+        f"金句 {number}",
+        "《测试书》",
+        "https://www.notion.so/book",
+        f"完整原文 {number}",
+        f"读书讲解稿 · 第1节第{number}段",
+        f"https://www.notion.so/source#paragraph{number}",
+    )
+
+
+def page(quote):
+    return {
+        "id": quote.id,
+        "properties": {
+            "金句": {"title": rich_text(quote.text)},
+            "书籍": {"relation": [{"id": id_(200)}]},
+            "原文": {"rich_text": rich_text(quote.context)},
+            "原文位置": {"rich_text": rich_text(quote.source_label)},
+            "原文链接": {"url": quote.source_url},
+        },
+    }
+
+
+class FakeNotion:
+    def __init__(self):
+        self.quotes = [page(make_quote(i)) for i in range(1, 9)]
+        self.records = []
+        self.home = None
+        self.user_content = "用户写在发布区以外的内容"
+        self.creates = 0
+        self.book_reads = 0
+        self.fail_home = False
+        self.fail_record = False
+        self.fail_status = False
+        self.uncertain = False
+        self.no_commit = False
+
+    def preflight(self, config):
+        pass
+
+    def query(self, source, filter_):
+        if source == CONFIG.quotes_data_source_id:
+            assert filter_ == {"property": "参与轮换", "checkbox": {"equals": True}}
+            return self.quotes
+        operation, day = next(iter(filter_["date"].items()))
+        return [
+            row
+            for row in self.records
+            if {
+                "equals": row["properties"]["日期"]["date"]["start"] == day,
+                "before": row["properties"]["日期"]["date"]["start"] < day,
+                "after": row["properties"]["日期"]["date"]["start"] > day,
+            }[operation]
+        ]
+
+    def page(self, id_):
+        self.book_reads += 1
+        return {
+            "id": id_,
+            "url": "https://www.notion.so/book",
+            "properties": {"书名": {"title": rich_text("《测试书》")}},
+        }
+
+    def create_record(self, source, properties, blocks):
+        self.creates += 1
+        if not self.no_commit:
+            self.records.append(
+                {
+                    "id": id_(300 + self.creates),
+                    "properties": properties,
+                    "blocks": copy.deepcopy(blocks),
+                }
+            )
+        if self.uncertain or self.no_commit:
+            raise UncertainCreate("timeout")
+        return self.records[-1]
+
+    def update_home(self, parent, blocks):
+        if self.fail_home:
+            self.fail_home = False
+            self.home = copy.deepcopy(blocks[:2])
+            raise PublicationError("failed mid-update")
+        self.home = copy.deepcopy(blocks)
+
+    def update_record(self, id_, properties, blocks):
+        row = next(row for row in self.records if row["id"] == id_)
+        if tuple(block["type"] for block in row["blocks"]) != SLOT_TYPES:
+            raise PublicationError("每日记录区块结构已改变")
+        row["properties"] = copy.deepcopy(properties)
+        if self.fail_record:
+            self.fail_record = False
+            row["blocks"][:2] = copy.deepcopy(blocks[:2])
+            raise PublicationError("failed mid-record-update")
+        row["blocks"] = copy.deepcopy(blocks)
+
+    def mark_published(self, id_, status):
+        if self.fail_status:
+            self.fail_status = False
+            raise PublicationError("failed status write")
+        row = next(row for row in self.records if row["id"] == id_)
+        row["properties"]["发布状态"] = {"select": {"name": status}}
+
+
+def test_complete_round_and_next_round_with_real_reservations():
+    api = FakeNotion()
+    for offset in range(9):
+        publish(api, CONFIG, now=NOW + timedelta(days=offset))
+    ids = [r["properties"]["金句"]["relation"][0]["id"] for r in api.records]
+    assert len(set(ids[:8])) == 8
+    assert [r["properties"]["轮次"]["number"] for r in api.records] == [1] * 8 + [2]
+
+
+def test_custom_home_url_flows_through_publication():
+    api = FakeNotion()
+    config = replace(CONFIG, page_url_template="https://notion.so/{page_id}")
+    result = publish(api, config, now=NOW)
+    assert api.records[0]["properties"]["发布状态"]["select"]["name"] == "已发布"
+    assert result["home"] == "https://notion.so/00000000000000000000000000000064"
+
+
+def test_same_day_overwrites_one_record_and_home(monkeypatch):
+    api = FakeNotion()
+    choices = iter([make_quote(1), make_quote(2)])
+    monkeypatch.setattr("qotd.publisher.choose_quote", lambda _quotes, _history: (next(choices), 1))
+    first = publish(api, CONFIG, now=NOW)
+    second = publish(api, CONFIG, now=NOW)
+    assert first["date"] == "2026-10-17"
+    assert first["record_id"] == second["record_id"]
+    assert first["quote"] == "金句 1" and second["quote"] == "金句 2"
+    assert len(api.records) == 1
+    assert api.records[0]["properties"]["金句"]["relation"][0]["id"] == id_(2)
+    assert api.records[0]["properties"]["发布状态"]["select"]["name"] == "已发布"
+    assert api.records[0]["blocks"] == api.home == render(make_quote(2), date(2026, 10, 17))
+    assert api.creates == 1
+    assert api.user_content == "用户写在发布区以外的内容"
+
+
+@pytest.mark.parametrize("failure", ["fail_record", "fail_home", "fail_status"])
+def test_partial_failure_next_run_reselects_and_overwrites(monkeypatch, failure):
+    api = FakeNotion()
+    choices = iter([make_quote(1), make_quote(2), make_quote(3)])
+    monkeypatch.setattr("qotd.publisher.choose_quote", lambda _quotes, _history: (next(choices), 1))
+    publish(api, CONFIG, now=NOW)
+    setattr(api, failure, True)
+    with pytest.raises(PublicationError):
+        publish(api, CONFIG, now=NOW)
+    result = publish(api, CONFIG, now=NOW)
+    assert api.creates == 1
+    assert len(api.records) == 1
+    assert api.records[0]["properties"]["金句"]["relation"][0]["id"] == id_(3)
+    assert api.records[0]["properties"]["发布状态"]["select"]["name"] == "已发布"
+    assert api.records[0]["blocks"] == api.home == render(make_quote(3), date(2026, 10, 17))
+    assert result["record_id"] == api.records[0]["id"]
+
+
+def test_single_quote_can_be_published_again_same_day():
+    api = FakeNotion()
+    api.quotes = [page(make_quote(1))]
+    first = publish(api, CONFIG, now=NOW)
+    second = publish(api, CONFIG, now=NOW)
+    assert first["quote"] == second["quote"] == "金句 1"
+    assert len(api.records) == api.creates == 1
+
+
+def test_only_final_same_day_quote_counts_in_next_round(monkeypatch):
+    api = FakeNotion()
+    api.quotes = [page(make_quote(1)), page(make_quote(2))]
+    choices = iter([make_quote(1), make_quote(2)])
+    original_choose = choose_quote
+
+    def choose(quotes, history):
+        if not history:
+            return next(choices), 1
+        return original_choose(quotes, history)
+
+    monkeypatch.setattr("qotd.publisher.choose_quote", choose)
+    publish(api, CONFIG, now=NOW)
+    publish(api, CONFIG, now=NOW)
+    publish(api, CONFIG, now=NOW + timedelta(days=1))
+    assert [row["properties"]["金句"]["relation"][0]["id"] for row in api.records] == [
+        id_(2),
+        id_(1),
+    ]
+    assert [row["properties"]["轮次"]["number"] for row in api.records] == [1, 1]
+
+
+def test_uncertain_create_after_commit_is_not_replayed():
+    api = FakeNotion()
+    api.uncertain = True
+    publish(api, CONFIG, now=NOW, sleep=lambda _: None)
+    assert api.creates == len(api.records) == 1
+
+
+def test_uncertain_create_without_visible_commit_stops():
+    api = FakeNotion()
+    api.no_commit = True
+    with pytest.raises(PublicationError, match="未重复创建"):
+        publish(api, CONFIG, now=NOW, sleep=lambda _: None)
+    assert api.creates == 1
+    assert api.home is None
+
+
+def test_duplicate_current_day_stops_before_home_change():
+    api = FakeNotion()
+    publish(api, CONFIG, now=NOW)
+    api.records.append(copy.deepcopy(api.records[0]))
+    expected = copy.deepcopy(api.home)
+    with pytest.raises(PublicationError, match="多条"):
+        publish(api, CONFIG, now=NOW)
+    assert api.home == expected
+    assert api.creates == 1
+
+
+def test_future_record_stops_before_any_write():
+    api = FakeNotion()
+    publish(api, CONFIG, now=NOW + timedelta(days=1))
+    expected = copy.deepcopy(api.home)
+    with pytest.raises(PublicationError, match="未来日期"):
+        publish(api, CONFIG, now=NOW)
+    assert api.home == expected
+    assert api.creates == 1
+
+
+@pytest.mark.parametrize("snapshot", ["not-json", "{}", "null", '"wrong"', '{"id": null}'])
+def test_invalid_snapshot_never_causes_reselection(snapshot):
+    api = FakeNotion()
+    props = record_properties(date(2026, 10, 17), make_quote(1), 1)
+    props["展示快照"] = {"rich_text": rich_text(snapshot)}
+    api.records = [{"id": id_(400), "properties": props}]
+    with pytest.raises(PublicationError, match="快照无效"):
+        publish(api, CONFIG, now=NOW)
+    assert api.creates == 0
+    assert api.home is None
+
+
+def test_snapshot_and_relation_mismatch_stops():
+    api = FakeNotion()
+    props = record_properties(date(2026, 10, 17), make_quote(1), 1)
+    props["金句"] = {"relation": [{"id": id_(2)}]}
+    api.records = [{"id": id_(400), "properties": props}]
+    with pytest.raises(PublicationError, match="不一致"):
+        publish(api, CONFIG, now=NOW)
+    assert api.home is None
+
+
+def test_new_quote_joins_current_round_and_retired_quotes_do_not_block_next():
+    quotes = [make_quote(1), make_quote(2)]
+    chosen, round_ = choose_quote(quotes + [make_quote(3)], [(id_(1), 1), (id_(2), 1)])
+    assert (chosen.id, round_) == (id_(3), 1)
+    chosen, round_ = choose_quote(quotes[:1], [(id_(1), 1), (id_(2), 1)])
+    assert (chosen.id, round_) == (id_(1), 2)
+
+
+def test_deleted_and_archived_quotes_skipped_book_relation_resolved_once():
+    api = FakeNotion()
+    api.quotes[0]["archived"] = True
+    api.quotes[1]["in_trash"] = True
+    quotes = read_quotes(api, api.quotes, CONFIG.page_url_template)
+    assert len(quotes) == 6
+    assert api.book_reads == 1
+    assert quotes[0].book == "《测试书》"
+    assert quotes[0].book_url == "https://www.notion.so/book"
+
+
+def test_empty_pool_and_missing_book_relation_fail_before_write():
+    with pytest.raises(PublicationError, match="初始化"):
+        choose_quote([], [])
+    api = FakeNotion()
+    api.quotes[0]["properties"]["书籍"] = {"relation": []}
+    with pytest.raises(PublicationError, match="关联"):
+        publish(api, CONFIG, now=NOW)
+    assert api.creates == 0
+
+
+def test_layout_links_and_long_original_text_are_preserved():
+    quote = make_quote(1)
+    blocks = render(quote, date(2026, 10, 17))
+    assert tuple(b["type"] for b in blocks) == SLOT_TYPES
+    texts = blocks[1]["quote"]["rich_text"]
+    assert plain(texts) == quote.text + "　——" + quote.book
+    assert texts[-1]["text"]["link"]["url"] == quote.book_url
+    assert texts[0]["annotations"]["bold"] is True
+    assert texts[-1]["annotations"] == {"color": "blue", "bold": True}
+    assert blocks[2]["paragraph"]["rich_text"] == blocks[4]["paragraph"]["rich_text"] == []
+    assert plain(blocks[3]["paragraph"]["rich_text"]) == quote.context
+    assert blocks[5]["paragraph"]["rich_text"][0]["text"]["link"]["url"] == quote.source_url
+    assert blocks[5]["paragraph"]["color"] == "default"
+    assert blocks[5]["paragraph"]["rich_text"][0]["annotations"] == {"color": "blue", "bold": True}
+    long = Quote(id_(1), "金句", "书名", quote.book_url, "全文" * 3000)
+    assert plain(render(long, date(2026, 10, 17))[3]["paragraph"]["rich_text"]) == long.context
+    assert all(len(item["text"]["content"]) <= 2000 for item in rich_text(long.context))
+
+
+def test_missing_original_shows_placeholder_and_no_retired_features():
+    quote = Quote(id_(1), "金句", "书名", "https://www.notion.so/book")
+    blocks = render(quote, date(2026, 10, 17))
+    assert plain(blocks[3]["paragraph"]["rich_text"]) == "原文待补充"
+    assert not any(
+        term in json.dumps(blocks, ensure_ascii=False)
+        for term in ("感想", "前一段", "后一段", "heading_2", "toggle")
+    )

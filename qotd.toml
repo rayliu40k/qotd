@@ -1,0 +1,2 @@
+[publication]
+page_url_template = "https://www.notion.so/{page_id}"
