@@ -1,70 +1,108 @@
-# 每日金句
+# 🌤️ 每日金句
 
-Notion 是唯一业务数据源，也是手机阅读入口。Codex 完成原稿解析、金句提取、上下文核对和增量初始化；Python 只负责随机轮换与每日发布，不包含文档解析、迁移、同步或 AI 调用。
+每天从 Notion 读书笔记中随机选一句，连同书名和讲解稿上下文，发布到适合手机阅读的 Notion 页面。
 
-## 当前入口
+[打开每日金句](https://www.notion.so/3fb2e3a6cfa6814a9371f5d09d3dd265) · [查看后台数据](https://www.notion.so/3fb2e3a6cfa681a483b2dda0d782d9d1)
 
-- [每日金句](https://www.notion.so/3fb2e3a6cfa6814a9371f5d09d3dd265)：私人阅读首页。
-- [后台数据](https://www.notion.so/3fb2e3a6cfa681a483b2dda0d782d9d1)：金句库和每日记录。
-- [本书原稿](https://www.notion.so/3fb2e3a6cfa681298c34f5652de0c91a)：DOCX 附件、7 节、84 个正文段落，来源是读书讲解稿。
+## 简介
 
-没有感想功能。LaunchAgent 配置为每天北京时间 11:00。是否已由 macOS 加载新配置，以 `launchctl print` 的当前结果为准。
+**Notion 是唯一的业务数据源，也是阅读界面。** Codex 负责导入书稿、核对摘抄与定位原文；这个 Python 项目只做随机抽取和发布，不解析 DOCX，也不调用 AI API。
 
-## 运行
+首页保持六个原生 Notion 区块，手机上自然换行：
 
-安装 Python 3.12 和 uv，在本项目目录执行：
+```text
+2026年10月19日 星期一
 
-```sh
-uv sync --locked
-# 将 Notion 连接密钥填入 .env 的 NOTION_TOKEN= 后，不要提交或发送密钥
-uv run qotd daily
+❝ 金句　——《书名》
+
+  金句所在的完整段落；对应文字以粗体和灰色背景标出。
+
+  读书讲解稿 · 第N节第M段
 ```
 
-聊天中的 Notion 连接与 Python API 凭据是独立授权的。请把 `.env` 对应的连接添加到“读书笔记”数据库、“每日金句”首页和“每日金句 · 后台数据”页。子页应继承访问权限。缺少访问权限时，Notion 也可能返回 404。
+实际页面在金句、原文和位置链接之间留有空白；书名链接指向读书笔记，位置链接直达原稿段落。没有感想区或额外的网页 UI。
 
-`.env` 不进入版本库或构建产物；文件权限应为 600。部署时通过环境变量注入 `NOTION_TOKEN` 也可。`qotd.toml` 只放可能经常调整的 `page_url_template`；固定的 Notion 页面及数据源 ID、发布状态、字段名、颜色、API 限制与日志保留参数集中在 [settings.py](src/qotd/settings.py)。从其他目录调用时使用绝对路径：
+## 快速开始
 
-```sh
-uv run --project /usr/local/codex-workspace/qotd qotd daily --config /usr/local/codex-workspace/qotd/qotd.toml
+需要 **Python 3.12+**、[uv](https://docs.astral.sh/uv/) 和一个有读写权限的 Notion 连接。本仓库已绑定现有的“每日金句”首页、金句库和每日记录库；在其他 Notion 工作区使用时，须先建立相同结构并调整 [`settings.py`](src/qotd/settings.py) 中的对象 ID。
+
+1. 下载项目并安装锁定的依赖：
+
+   ```sh
+   git clone https://github.com/rayliu40k/qotd.git
+   cd qotd
+   uv sync --locked
+   ```
+
+2. 配置密钥。将 Notion 连接授权给读书笔记库、[每日金句首页](https://www.notion.so/3fb2e3a6cfa6814a9371f5d09d3dd265)和[后台数据页](https://www.notion.so/3fb2e3a6cfa681a483b2dda0d782d9d1)，再填写本地 `.env`：
+
+   ```sh
+   cp .env.example .env
+   chmod 600 .env
+   # 编辑 .env，填入真实的 NOTION_TOKEN；不要把密钥提交到 Git
+   ```
+
+3. 手动发布北京时间当天的金句：
+
+   ```sh
+   uv run qotd daily
+   ```
+
+运行成功后打开[每日金句首页](https://www.notion.so/3fb2e3a6cfa6814a9371f5d09d3dd265)查看结果。**每运行一次都会重新抽取**；同一天再次运行会覆盖当天展示，不会新增第二条每日记录。
+
+## 架构设计
+
+```mermaid
+flowchart LR
+    A[Notion 读书笔记] --> C[Codex 初始化]
+    B[DOCX 讲解稿] --> C
+    C --> D[(Notion 金句库)]
+    C --> E[Notion 原稿子页]
+    D --> F[Python: qotd daily]
+    G[(Notion 每日记录库)] <--> F
+    F --> H[Notion 每日金句首页]
+    E -. 原文段落链接 .-> H
 ```
 
-`--config` 必须指向实际存在的文件。若配置目录不可用，命令会改把错误写入当前工作目录的 `logs/`，然后停止发布。
+| Notion 对象 | 用途 |
+| --- | --- |
+| 读书笔记 | 保存书籍信息和原始摘抄；每本书下有讲解稿附件与逐段原文。 |
+| 金句库 | 每条摘抄一页，关联书籍、完整原文、位置链接和“参与轮换”开关。 |
+| 每日记录库 | 每天最多一页，保存最后一次发布的金句、轮次与展示快照。 |
+| 每日金句首页 | 仅展示当天日期、金句、出处和相关原文。 |
 
-## macOS 定时任务
+数据只保存在 Notion。本地的 `.env`、配置、日志和进程锁不保存金句或轮换历史。
 
-常用命令和卸载方法见 [launchd/README.md](launchd/README.md)。
+## 发布规则
 
-用户级配置文件见 [launchd/com.rayliu.qotd.daily.plist](launchd/com.rayliu.qotd.daily.plist)，安装位置是 `~/Library/LaunchAgents/com.rayliu.qotd.daily.plist`。它每天按 Mac 系统时区的 11:00 调用一次虚拟环境中的 `qotd daily`；当前 Mac 时区是北京时间。macOS 可能在配置文件安装后自动加载它，重复 `bootstrap` 会报错；先用 `launchctl print` 检查。修改配置文件不会自动更新已加载的任务，需卸载再加载才会生效。日志由程序写入项目 `logs/`。配置没有 `RunAtLoad` 或 `KeepAlive`，登录本身不会额外触发发布。
+- 只从开启“参与轮换”的金句中随机选择。当前轮每句展示一次后进入下一轮；新增金句可加入当前轮。
+- 轮次根据**今天以前**的最终每日记录计算。当天重发时旧选句不计入历史，新选句也可能碰巧相同。
+- 先保存当天记录与快照，再更新首页，最后标记“已发布”。失败后可重新运行；若发现重复日期或页面结构被改动，程序会停止，避免覆盖其他内容。
+- 直接摘抄在发布时匹配原文并高亮；概括性金句使用 Codex 初始化时标注的灰色原句范围。缺少可靠上下文时显示“原文待补充”。
 
-```sh
-launchctl print gui/$(id -u)/com.rayliu.qotd.daily
-# 仅当 print 提示服务不存在时，才手动加载：
-launchctl bootstrap gui/$(id -u) "$HOME/Library/LaunchAgents/com.rayliu.qotd.daily.plist"
-# 需要停用时：
-launchctl bootout gui/$(id -u)/com.rayliu.qotd.daily
+## 新增书籍
+
+向 Codex 提供**已有的 Notion 书籍笔记**和原稿路径，调用 `$initialize-daily-quote-book`。Codex 会核对摘抄、导入原稿、建立段落链接并更新金句库；`qotd daily` 不负责初始化，也不会自动同步后来手工修改的笔记。
+
+```text
+使用 $initialize-daily-quote-book 初始化《书名》
+原稿：/绝对路径/书名.docx
 ```
 
-每次触发都会重新抽取并覆盖当天金句。调整时间后需重新安装并加载配置文件。
+直接修改 Notion 摘抄后，请再次让 Codex 核对金句库。讲解稿和出版书籍原文应按实际来源区分。
 
-## 发布行为
+## macOS 定时运行
 
-- 手动运行立即发布北京时间当天内容；加载新配置后的 LaunchAgent 每天 11:00 运行一次同一命令。
-- 从启用轮换的金句中随机选择，一轮用完才重复，新金句可进入当前轮次。
-- 每次运行都重新随机抽取。同一天已有每日记录时复用该页面 ID，覆盖其金句关联、轮次、展示快照和正文；每天最多保留一条记录。
-- 轮次只根据当天以前的最终记录计算。同日被覆盖的金句不计入历史；重新抽取也可能碰巧得到同一句。
-- 在 Notion 先保存本次快照及待发布状态，再更新每日记录正文和首页，最后标记发布完成。
-- 更新不是事务；失败可能短暂留下部分内容。下一次运行会重新抽取并覆盖当天记录。创建请求超时或返回不确定结果时，先查询而非重复创建。
-- 全部接口分页读取；限流、读取及安全更新会有限重试。重复日期、无效快照或未来记录会停止发布，请让 Codex 核对。
-- 仅更新指定同步块内六个区块：日期、带书名链接的金句、空白、原文、空白、原文位置链接。结构改变或空白区被填写时停止，防止覆盖用户内容。
-- 缺少原文时显示“原文待补充”。链接书名来自关联的书籍页，不单独复制书名字段。
-- 首页金句使用粗体，原文中的对应文字使用粗体和灰色背景；书名和原文位置链接使用蓝色粗体。标点、空白和全半角差异不改变原文；概括性摘抄使用 Codex 在“原文”富文本中核验并标为灰色背景的片段，发布时呈现为粗体加灰色背景，不自动猜测语义。定位范围随展示快照保存；旧快照仍可读取并直接匹配。
-- 使用 `notion-client` SDK 访问 Notion。`httpx` 保持为直接依赖，因为客户端明确捕获其传输异常，测试也使用它注入模拟 HTTP 客户端。关键路径、结果和错误由 Loguru 同时写入控制台与项目 `logs/`，命令入口不再使用 `print`；日志按北京时间逐日命名，仅保留最近七天，每个文件最多 500 MB。日志不包含连接密钥。
+项目提供 [LaunchAgent 配置](launchd/com.rayliu.qotd.daily.plist)，模板按 **Mac 系统时区每天 11:00** 执行。先完成手动发布验证，再按 [launchd 操作指南](launchd/README.md)安装、查看状态或停用；配置文件不会因编辑而自动重新加载。`kickstart` 会立即重发当天金句。
 
-本机文件锁只防止同一台 Mac 的并发发布，不存储业务状态。Notion API 没有事务或唯一约束，不能多机同时运行。未来迁云时先停用 Mac 任务。
+## 配置、日志与检查
 
-## 初始化与验证
-
-初始化流程见 [Notion每日金句初始化 skill](/Users/rayliu/.codex/skills/initialize-daily-quote-book/SKILL.md)。直接编辑原读书笔记后，需要让 Codex 更新金句库，Python 不自动同步。
+| 文件 | 内容 |
+| --- | --- |
+| `.env` | `NOTION_TOKEN`；仅存本机，权限应为 `600`，不提交。 |
+| [`qotd.toml`](qotd.toml) | 可调整的 Notion 页面链接模板。 |
+| [`settings.py`](src/qotd/settings.py) | 固定的页面与数据源 ID、字段名、状态及技术限制。 |
+| `logs/qotd_YYYY-MM-DD.log` | 与控制台同步的 Loguru 日志；保留最近 7 天，单文件上限 500 MB。 |
 
 ```sh
 uv run pytest -q
@@ -72,4 +110,8 @@ uv run ruff check .
 uv run ruff format --check .
 ```
 
-测试使用合成数据和模拟 HTTP，不向真实 Notion 写入测试日期。同日覆盖验收应确认记录 ID 不变、库中仍只有一条当天记录，且记录与首页均显示最后一次选句。
+测试使用模拟数据，不会往真实 Notion 写入测试日期。发布命令会修改真实首页和当天记录；需要从其他目录运行时，指定项目与配置的绝对路径：
+
+```sh
+uv run --project /usr/local/codex-workspace/qotd qotd daily --config /usr/local/codex-workspace/qotd/qotd.toml
+```
