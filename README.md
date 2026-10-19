@@ -93,7 +93,7 @@ flowchart LR
 
 ## macOS 定时运行
 
-项目提供 [LaunchAgent 配置](launchd/com.rayliu.qotd.daily.plist)，模板按 **Mac 系统时区每天 11:00** 执行。先完成手动发布验证，再按 [launchd 操作指南](launchd/README.md)安装、查看状态或停用；配置文件不会因编辑而自动重新加载。`kickstart` 会立即重发当天金句。
+项目提供 [LaunchAgent 配置](launchd/com.rayliu.qotd.daily.plist)，模板按 **Mac 系统时区每天 9:00** 执行。先完成手动发布验证，再按 [launchd 操作指南](launchd/README.md)安装、查看状态或停用；配置文件不会因编辑而自动重新加载。`kickstart` 会立即重发当天金句。
 
 ## 配置、日志与检查
 
