@@ -3,6 +3,7 @@ import json
 import re
 from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
+from threading import Barrier, Lock
 from uuid import UUID
 
 import pytest
@@ -146,6 +147,7 @@ def test_publication_timing_is_written_to_daily_log(tmp_path):
             "Notion 发布前核验耗时",
             "Notion 查询可轮换金句耗时",
             "整理金句和关联书籍耗时",
+            "Notion 查询关联书籍耗时",
             "Notion 查询历史每日记录耗时",
             "核对轮换历史耗时",
             "筛选",
@@ -321,6 +323,37 @@ def test_deleted_and_archived_quotes_skipped_book_relation_resolved_once():
     assert quotes[0].book_url == "https://www.notion.so/book"
 
 
+def test_distinct_books_are_read_concurrently_and_reused():
+    api = FakeNotion()
+    api.quotes = [page(make_quote(i)) for i in (1, 2, 3)]
+    api.quotes[1]["properties"]["书籍"] = {"relation": [{"id": id_(201)}]}
+    arrived = Barrier(2, timeout=2)
+    calls = []
+    lock = Lock()
+
+    def read_book(book_id):
+        with lock:
+            calls.append(book_id)
+        # 串行读取会在屏障处超时；两本书必须同时发起读取。
+        arrived.wait()
+        return {
+            "id": book_id,
+            "url": f"https://www.notion.so/{book_id}",
+            "properties": {"书名": {"title": rich_text(f"《书 {book_id}》")}},
+        }
+
+    api.page = read_book
+    quotes = read_quotes(api, api.quotes, CONFIG.page_url_template)
+    assert [quote.id for quote in quotes] == [id_(1), id_(2), id_(3)]
+    assert len(calls) == 2
+    assert set(calls) == {id_(200), id_(201)}
+    assert [quote.book for quote in quotes] == [
+        f"《书 {id_(200)}》",
+        f"《书 {id_(201)}》",
+        f"《书 {id_(200)}》",
+    ]
+
+
 def test_empty_pool_and_missing_book_relation_fail_before_write():
     with pytest.raises(PublicationError, match="初始化"):
         choose_quote([], [])
@@ -329,6 +362,7 @@ def test_empty_pool_and_missing_book_relation_fail_before_write():
     with pytest.raises(PublicationError, match="关联"):
         publish(api, CONFIG, now=NOW)
     assert api.creates == 0
+    assert api.book_reads == 0
 
 
 def test_layout_links_and_long_original_text_are_preserved():

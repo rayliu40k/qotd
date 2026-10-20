@@ -14,6 +14,22 @@
   },
   "features": [
     {
+      "id": "parallel-book-reads",
+      "priority": 1,
+      "area": "publication",
+      "title": "并发读取候选金句的关联书籍",
+      "user_visible_behavior": "整理可轮换金句时并发读取不同书籍，同一本书只读取一次，轮换和发布结果保持不变。",
+      "status": "passing",
+      "verification": [
+        "使用模拟 Notion 数据确认不同书籍并发读取、重复关联只读一次且候选顺序不变。",
+        "运行 ./init.sh，确认全部离线测试、Ruff 检查及格式检查通过。"
+      ],
+      "evidence": [
+        "2026-10-20：tests/test_publication.py::test_distinct_books_are_read_concurrently_and_reused 用双线程屏障确认不同书籍同时读取，且重复关联仅请求一次、候选顺序不变；./init.sh 结果为 69 passed，Ruff 检查和格式检查通过。"
+      ],
+      "notes": "仅完成离线验证；实际 Notion 耗时仍需从下一次正常发布日志确认，未执行真实发布。"
+    },
+    {
       "id": "parallel-preflight",
       "priority": 1,
       "area": "notion",

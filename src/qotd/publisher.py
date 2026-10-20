@@ -4,6 +4,7 @@
 """
 
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 
 from loguru import logger
@@ -12,6 +13,7 @@ from .models import PublicationError, Quote, choose_quote, prop_text, relation_i
 from .notion import UncertainCreate
 from .render import render
 from .settings import (
+    BOOK_READ_WORKERS,
     CREATE_RECOVERY_DELAYS,
     DAILY_DATE,
     DAILY_QUOTE,
@@ -59,20 +61,29 @@ def record_properties(day, quote, round_, pending_status=PENDING_STATUS):
 
 
 def read_quotes(api, rows, page_url_template):
-    """从金句页面读取候选项，并缓存关联的书籍页。
+    """校验候选金句关联，并发读取不同书籍后组装完整候选项。
 
     已归档或进入垃圾箱的金句不会参加轮换；同一本书仅查询一次。
+    保留全部候选项的原有校验，避免选中有效金句时掩盖其他错误数据。
     """
-    books = {}
-    quotes = []
-    for row in rows:
-        if row.get("archived") or row.get("in_trash"):
-            continue
-        id_ = relation_id(row, QUOTE_BOOK)
-        if id_ not in books:
-            books[id_] = api.page(id_)
-        quotes.append(Quote.from_page(row, books[id_], page_url_template))
-    return quotes
+    active_rows = [row for row in rows if not row.get("archived") and not row.get("in_trash")]
+    book_ids = list(dict.fromkeys(relation_id(row, QUOTE_BOOK) for row in active_rows))
+    if not book_ids:
+        return []
+    # 关联 ID 已全部核验，下面只并发读取不同书籍；共享 API 客户端用于连接复用。
+    start = time.perf_counter()
+    with ThreadPoolExecutor(max_workers=min(BOOK_READ_WORKERS, len(book_ids))) as executor:
+        futures = {id_: executor.submit(api.page, id_) for id_ in book_ids}
+        books = {id_: future.result() for id_, future in futures.items()}
+    logger.info(
+        "Notion 查询关联书籍耗时：{:.2f} ms，书籍：{} 本",
+        (time.perf_counter() - start) * 1000,
+        len(books),
+    )
+    return [
+        Quote.from_page(row, books[relation_id(row, QUOTE_BOOK)], page_url_template)
+        for row in active_rows
+    ]
 
 
 def publish(api, config, *, now=None, sleep=time.sleep):
