@@ -5,6 +5,7 @@
 """
 
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 import httpx
 from loguru import logger
@@ -138,18 +139,31 @@ class Notion:
         return rows
 
     def preflight(self, config):
-        """核验数据源、首页及管理块归属，失败时阻止发布。"""
-        for source in (config.quotes_data_source_id, config.daily_data_source_id):
-            self._call(
-                lambda source=source: self.client.data_sources.retrieve(data_source_id=source),
-                "读取数据源",
+        """并发读取数据源与首页区块，再统一核验并阻止错误写入。"""
+        # 五个对象均由配置中的 ID 定位，读取彼此独立；只在全部返回后进入写入流程。
+        with ThreadPoolExecutor(max_workers=5) as executor:
+            sources = [
+                executor.submit(
+                    self._call,
+                    lambda source=source: self.client.data_sources.retrieve(data_source_id=source),
+                    "读取数据源",
+                )
+                for source in (config.quotes_data_source_id, config.daily_data_source_id)
+            ]
+            home_result = executor.submit(self.page, config.home_page_id)
+            block_result = executor.submit(
+                self._call,
+                lambda: self.client.blocks.retrieve(block_id=config.managed_block_id),
+                "读取管理块",
             )
-        home = self.page(config.home_page_id)
+            slots_result = executor.submit(self.slots, config.managed_block_id)
+        # 保留原有校验顺序和错误信息；任何读取或结构校验失败都不会写入。
+        for source_result in sources:
+            source_result.result()
+        home = home_result.result()
         if home.get("archived") or home.get("in_trash"):
             raise PublicationError("首页已删除，请让 Codex 核查配置。")
-        block = self._call(
-            lambda: self.client.blocks.retrieve(block_id=config.managed_block_id), "读取管理块"
-        )
+        block = block_result.result()
         if (
             block.get("type") != "synced_block"
             or block.get("synced_block", {}).get("synced_from") is not None
@@ -158,7 +172,7 @@ class Notion:
             != canonical_id(config.home_page_id)
         ):
             raise PublicationError("首页发布区域不是指定页面的原始同步块，请让 Codex 核查。")
-        self.slots(config.managed_block_id)
+        slots_result.result()
 
     def create_record(self, source, properties, blocks):
         """创建包含快照的每日记录，返回 SDK 响应。

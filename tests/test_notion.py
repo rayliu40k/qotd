@@ -1,5 +1,6 @@
 import json
 from datetime import date
+from threading import Barrier, Lock
 from types import SimpleNamespace
 from uuid import UUID
 
@@ -190,3 +191,48 @@ def test_preflight_rejects_sync_block_from_another_page():
 
     with pytest.raises(PublicationError, match="原始同步块"):
         api(handler).preflight(config)
+
+
+def test_preflight_reads_all_objects_concurrently_before_validation():
+    home = str(UUID(int=100))
+    config = SimpleNamespace(
+        home_page_id=home,
+        managed_block_id="managed",
+        quotes_data_source_id="quotes",
+        daily_data_source_id="daily",
+    )
+    arrived = Barrier(5, timeout=2)
+    paths = []
+    lock = Lock()
+
+    def handler(request):
+        with lock:
+            paths.append(request.url.path)
+        # 串行读取无法使五个请求同时到达，测试会因屏障超时而失败。
+        arrived.wait()
+        if request.url.path == "/v1/blocks/managed/children":
+            return httpx.Response(200, json={"results": children(), "has_more": False})
+        if request.url.path == "/v1/blocks/managed":
+            return httpx.Response(
+                200,
+                json={
+                    "type": "synced_block",
+                    "synced_block": {"synced_from": None},
+                    "parent": {"page_id": home},
+                },
+            )
+        return httpx.Response(200, json={})
+
+    adapter = api(handler)
+    try:
+        adapter.preflight(config)
+    finally:
+        adapter.close()
+    assert len(paths) == 5
+    assert set(paths) == {
+        "/v1/data_sources/quotes",
+        "/v1/data_sources/daily",
+        f"/v1/pages/{home}",
+        "/v1/blocks/managed",
+        "/v1/blocks/managed/children",
+    }
