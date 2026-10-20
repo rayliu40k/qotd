@@ -15,20 +15,22 @@
   "features": [
     {
       "id": "harness-bootstrap",
-      "date": "2026-10-20 15:50:08",
+      "date": "2026-10-20 16:06:53",
       "priority": 4,
       "area": "harness",
       "title": "项目启动、验证与会话交接",
-      "user_visible_behavior": "后续 Agent 可从仓库文件了解项目边界、验证状态和最近一轮交接，并用 ./init.sh 离线验证；收尾时按清单核对。",
+      "user_visible_behavior": "根目录 AGENTS.md 索引 docs/ 下的状态、交接与收尾文件；Agent 可运行 ./docs/init.sh 离线验证。",
       "status": "passing",
       "verification": [
-        "运行 ./init.sh，确认 pytest、Ruff 检查及格式检查通过且不会发布金句。",
-        "检查 feature_list.json 可解析、只有一个或零个 in_progress，且文件中没有示例项目内容。",
-        "核对时间字段与会话记录降序排列、交接摘要和收尾清单对应真实项目，并检查中文提交信息。"
+        "运行 ./docs/init.sh，确认 pytest、Ruff 检查及格式检查通过且不会发布金句。",
+        "检查 docs/feature_list.json 可解析、只有一个或零个 in_progress，且文件中没有示例项目内容。",
+        "核对时间字段与会话记录降序排列、交接摘要和收尾清单对应真实项目，并检查中文提交信息。",
+        "确认根目录 AGENTS.md 的索引能定位 docs/ 中每个 Harness 文件，且移动后的脚本仍从项目根目录运行。"
       ],
       "evidence": [
         "2026-10-19：./init.sh 成功，66 passed，Ruff 检查通过且 18 个文件格式正确；脚本只打印真实发布命令。feature_list.json 通过 python3 -m json.tool 解析，bash -n init.sh 与 git diff --check 均通过。",
-        "2026-10-20：按 Git 提交的北京时间回填历史记录时间；新增项目专用交接摘要和收尾清单，并在 AGENTS.md 规定开工及收尾使用方式。./init.sh 为 72 passed，Ruff 检查和格式检查通过；JSON 时间排序和 Markdown 会话标题经脚本核对。"
+        "2026-10-20：按 Git 提交的北京时间回填历史记录时间；新增项目专用交接摘要和收尾清单，并在 AGENTS.md 规定开工及收尾使用方式。./init.sh 为 72 passed，Ruff 检查和格式检查通过；JSON 时间排序和 Markdown 会话标题经脚本核对。",
+        "2026-10-20：五个 Harness 文件已移至 docs/，AGENTS.md 指向新路径；从项目根目录运行 ./docs/init.sh 为 72 passed，Ruff 检查及格式检查通过。"
       ],
       "notes": "已有 .venv 的路径通过验证；全新环境的 uv sync --locked 尚未在本沙箱验证。"
     },
@@ -42,7 +44,7 @@
       "status": "passing",
       "verification": [
         "模拟 Notion 验证独立读取并发、每日记录单次读取与分类、分页及书籍关联复用。",
-        "验证同日覆盖、轮换、失败恢复和写入顺序；运行 ./init.sh。"
+        "验证同日覆盖、轮换、失败恢复和写入顺序；运行 ./docs/init.sh。"
       ],
       "evidence": [
         "2026-10-20：tests/test_publication.py 验证首页核验、金句读取和每日记录读取重叠执行；发布前每日记录只查询一次并在内存分类，写入后仍按当天日期核验唯一记录。关联书籍失败时等待其余请求结束且不写入；同日覆盖、轮换、分页、失败恢复等现有用例通过。./init.sh 结果为 72 passed，Ruff 检查及格式检查通过。"
@@ -59,7 +61,7 @@
       "status": "passing",
       "verification": [
         "使用模拟 Notion 数据确认不同书籍并发读取、重复关联只读一次且候选顺序不变。",
-        "运行 ./init.sh，确认全部离线测试、Ruff 检查及格式检查通过。"
+        "运行 ./docs/init.sh，确认全部离线测试、Ruff 检查及格式检查通过。"
       ],
       "evidence": [
         "2026-10-20：tests/test_publication.py::test_distinct_books_are_read_concurrently_and_reused 用双线程屏障确认不同书籍同时读取，且重复关联仅请求一次、候选顺序不变；./init.sh 结果为 69 passed，Ruff 检查和格式检查通过。"
@@ -76,7 +78,7 @@
       "status": "passing",
       "verification": [
         "模拟慢请求验证核验读取并发且所有检查在写入前完成。",
-        "运行 ./init.sh，确认原有发布逻辑、pytest 与 Ruff 仍通过。"
+        "运行 ./docs/init.sh，确认原有发布逻辑、pytest 与 Ruff 仍通过。"
       ],
       "evidence": [
         "2026-10-20：tests/test_notion.py::test_preflight_reads_all_objects_concurrently_before_validation 用五方屏障确认五个读取同时发出；既有首页归属校验测试通过。./init.sh 结果为 68 passed，Ruff 检查和格式检查通过。"
@@ -93,7 +95,7 @@
       "status": "passing",
       "verification": [
         "使用模拟 Notion 数据发布，检查关键阶段耗时被写入日志文件。",
-        "运行 ./init.sh，确认原有发布逻辑、pytest 与 Ruff 仍通过。"
+        "运行 ./docs/init.sh，确认原有发布逻辑、pytest 与 Ruff 仍通过。"
       ],
       "evidence": [
         "2026-10-20：模拟 Notion 发布测试确认查询、整理、筛选、排序、随机选择和写入阶段耗时进入每日日志文件；./init.sh 结果为 67 passed，Ruff 检查和格式检查通过。"

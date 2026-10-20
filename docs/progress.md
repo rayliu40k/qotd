@@ -3,13 +3,23 @@
 ## 当前已验证状态
 
 - 仓库根目录：`/usr/local/codex-workspace/qotd`
-- 标准环境与验证入口：`./init.sh`（离线 pytest、Ruff 检查与格式检查）
+- 标准环境与验证入口：`./docs/init.sh`（离线 pytest、Ruff 检查与格式检查）
 - 真实发布命令：`uv run qotd daily`，会覆盖北京时间当天的展示；不可当作 smoke test
 - 业务存储：Notion 中的读书笔记、金句库、每日记录库与首页；本地不保存业务数据库
-- 当前最高优先级未完成功能：没有已确认并排定的产品功能；新需求由用户确定后加入 `feature_list.json`
+- 当前最高优先级未完成功能：没有已确认并排定的产品功能；新需求由用户确定后加入 `docs/feature_list.json`
 - 当前 blocker：未发现代码测试 blocker；本会话未验证真实 Notion 读写或全新环境安装
 
+历史会话记录保留当时实际使用的路径；当前路径以根目录 `AGENTS.md` 的索引为准。
+
 ## 会话记录
+
+### 2026-10-20 16:06:53：将 Harness 专题文件归入 docs
+
+- 本轮目标：根目录只保留 `AGENTS.md` 作为 Harness 入口，其余五个 Harness 文件移至 `docs/` 并建立明确索引。
+- 已完成：移动验证脚本、功能清单、进度日志、收尾清单和交接摘要；修正 `docs/init.sh` 的项目根目录定位，更新 `AGENTS.md` 的路径、读取时机和收尾规则。
+- 运行过的验证：移动前 `./init.sh` 为 72 passed；移动后 `./docs/init.sh` 为 72 passed，Ruff 检查和格式检查通过。功能清单可解析，日期顺序与会话标题格式已核对，`git diff --check` 通过。
+- 未解决风险：本轮未执行真实 Notion 发布；线上权限、页面状态与实际耗时没有重新核验。
+- 下一步最佳动作：下一轮从根目录 `AGENTS.md` 查找 `docs/` 索引，运行 `./docs/init.sh` 后再处理用户的新目标。
 
 ### 2026-10-20 15:50:08：规范 Harness 时间记录与会话交接
 

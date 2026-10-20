@@ -3,7 +3,7 @@
 # 为每日金句项目准备本地环境并执行不写入 Notion 的基础验证。
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
 # 沙箱无法访问用户目录下的 uv 缓存时，使用当前可写的临时目录。
