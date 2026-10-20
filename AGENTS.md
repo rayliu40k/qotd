@@ -5,7 +5,7 @@
 ## 开工流程
 
 1. 用 `pwd` 确认位于 `/usr/local/codex-workspace/qotd`。
-2. 读取 `progress.md` 和 `feature_list.json`，了解已验证状态与尚未完成的工作；同时核对用户本轮的实际目标，不凭空启动清单外的功能。
+2. 读取 `progress.md`、`feature_list.json` 和 `session-handoff.md`，了解已验证状态、尚未完成的工作及上一轮交接；同时核对用户本轮的实际目标，不凭空启动清单外的功能。
 3. 运行 `git status --short`、`git log --oneline -5`，保留已有未提交改动。
 4. 运行 `./init.sh`。基础验证失败时，先修复或记录明确的环境 blocker，再开发目标功能。
 5. 修改真实 Notion 内容前，读取 `qotd.toml`；初始化书籍时还要读取 `initialize-daily-quote-book` skill，并核对现有页面与记录。
@@ -21,10 +21,16 @@
 ## 工作与验证
 
 - 一次只推进一个明确功能；`feature_list.json` 同时最多一个 `in_progress`。
+- `feature_list.json` 每个功能保留北京时间 `date`（`YYYY-MM-DD HH:MM:SS`）：新建功能时记录创建时间，状态或证据有实质更新时记录该次更新时间；按此字段降序排列，最新置顶。`progress.md` 的会话标题使用 `### YYYY-MM-DD HH:MM:SS：主题`，会话记录也按时间降序排列。历史时间只用可核实的来源回填，不猜测。
 - 对 Python 变更运行 `./init.sh`，其中包含 pytest、Ruff 检查与格式检查。需要验证真实 Notion 行为时，先明确写入影响，再按用户授权执行；离线测试通过不能替代线上验收。
 - 不因代码存在或测试名称暗示功能完成。只有目标行为实现、要求的验证实际通过、证据写入 `feature_list.json` 或 `progress.md`，并且 `./init.sh` 可重新运行，才能标为 `passing`。
 - 不为通过检查而降低测试或验证要求。未验证的事实留空或写为“未验证”。
 
 ## 收尾
 
-更新 `progress.md` 与 `feature_list.json`，记录运行过的命令、结果、未解决风险和下一步。核对 `git diff` 与工作区状态，只提交本轮相关且处于安全状态的文件，提交信息说明实际改动。下一轮应能直接运行 `./init.sh` 继续工作。
+- 更新 `progress.md` 与 `feature_list.json`。
+- 记录运行过的命令、结果、未解决风险和下一步。
+- 对照 `clean-state-checklist.md` 逐项检查。这是每轮结束前的可复用检查清单，不在文件中永久勾选；无法通过的项目写入进度和交接摘要。
+- 更新 `session-handoff.md`，用简短的当前已验证状态、本轮改动、未验证事项、下一步和命令覆盖上一轮摘要；它在收尾时写、下一轮开工时读，不充当长期历史日志。
+- 核对 `git diff` 与工作区状态，只提交本轮相关且处于安全状态的文件；每次提交的 commit message 用中文，说明实际改动。
+- 下一轮应能直接运行 `./init.sh` 继续工作。

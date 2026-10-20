@@ -14,7 +14,27 @@
   },
   "features": [
     {
+      "id": "harness-bootstrap",
+      "date": "2026-10-20 15:50:08",
+      "priority": 4,
+      "area": "harness",
+      "title": "项目启动、验证与会话交接",
+      "user_visible_behavior": "后续 Agent 可从仓库文件了解项目边界、验证状态和最近一轮交接，并用 ./init.sh 离线验证；收尾时按清单核对。",
+      "status": "passing",
+      "verification": [
+        "运行 ./init.sh，确认 pytest、Ruff 检查及格式检查通过且不会发布金句。",
+        "检查 feature_list.json 可解析、只有一个或零个 in_progress，且文件中没有示例项目内容。",
+        "核对时间字段与会话记录降序排列、交接摘要和收尾清单对应真实项目，并检查中文提交信息。"
+      ],
+      "evidence": [
+        "2026-10-19：./init.sh 成功，66 passed，Ruff 检查通过且 18 个文件格式正确；脚本只打印真实发布命令。feature_list.json 通过 python3 -m json.tool 解析，bash -n init.sh 与 git diff --check 均通过。",
+        "2026-10-20：按 Git 提交的北京时间回填历史记录时间；新增项目专用交接摘要和收尾清单，并在 AGENTS.md 规定开工及收尾使用方式。./init.sh 为 72 passed，Ruff 检查和格式检查通过；JSON 时间排序和 Markdown 会话标题经脚本核对。"
+      ],
+      "notes": "已有 .venv 的路径通过验证；全新环境的 uv sync --locked 尚未在本沙箱验证。"
+    },
+    {
       "id": "async-publisher",
+      "date": "2026-10-20 11:53:04",
       "priority": 1,
       "area": "publication",
       "title": "异步并发与减少 Notion 读取次数",
@@ -31,6 +51,7 @@
     },
     {
       "id": "parallel-book-reads",
+      "date": "2026-10-20 11:24:05",
       "priority": 1,
       "area": "publication",
       "title": "并发读取候选金句的关联书籍",
@@ -47,6 +68,7 @@
     },
     {
       "id": "parallel-preflight",
+      "date": "2026-10-20 10:44:33",
       "priority": 1,
       "area": "notion",
       "title": "并发读取发布前核验对象",
@@ -62,7 +84,25 @@
       "notes": "仅完成离线并发与结构保护验证；实际 Notion 延迟尚未测量，未执行真实发布。"
     },
     {
+      "id": "timing-logs",
+      "date": "2026-10-20 09:57:32",
+      "priority": 1,
+      "area": "observability",
+      "title": "记录每日发布关键阶段耗时",
+      "user_visible_behavior": "运行每日发布时，控制台和每日文件日志显示 Notion 金句查询、数据整理、筛选、排序与随机选择的耗时。",
+      "status": "passing",
+      "verification": [
+        "使用模拟 Notion 数据发布，检查关键阶段耗时被写入日志文件。",
+        "运行 ./init.sh，确认原有发布逻辑、pytest 与 Ruff 仍通过。"
+      ],
+      "evidence": [
+        "2026-10-20：模拟 Notion 发布测试确认查询、整理、筛选、排序、随机选择和写入阶段耗时进入每日日志文件；./init.sh 结果为 67 passed，Ruff 检查和格式检查通过。"
+      ],
+      "notes": "只记录耗时与数量，不记录凭据或原文；未执行真实 Notion 发布。"
+    },
+    {
       "id": "publish-daily",
+      "date": "2026-10-19 23:54:46",
       "priority": 1,
       "area": "publication",
       "title": "每日抽取和同日覆盖发布",
@@ -79,6 +119,7 @@
     },
     {
       "id": "render-context",
+      "date": "2026-10-19 23:54:46",
       "priority": 2,
       "area": "rendering",
       "title": "六区块首页与原文高亮",
@@ -95,6 +136,7 @@
     },
     {
       "id": "notion-boundaries",
+      "date": "2026-10-19 23:54:46",
       "priority": 3,
       "area": "notion",
       "title": "Notion 分页、重试与页面保护",
@@ -108,38 +150,6 @@
         "2026-10-19：全套离线 pytest -q 结果为 66 passed，包含 Notion 接口模拟用例。"
       ],
       "notes": "线上 Notion 权限与实时数据未在本次会话核验。"
-    },
-    {
-      "id": "timing-logs",
-      "priority": 1,
-      "area": "observability",
-      "title": "记录每日发布关键阶段耗时",
-      "user_visible_behavior": "运行每日发布时，控制台和每日文件日志显示 Notion 金句查询、数据整理、筛选、排序与随机选择的耗时。",
-      "status": "passing",
-      "verification": [
-        "使用模拟 Notion 数据发布，检查关键阶段耗时被写入日志文件。",
-        "运行 ./init.sh，确认原有发布逻辑、pytest 与 Ruff 仍通过。"
-      ],
-      "evidence": [
-        "2026-10-20：模拟 Notion 发布测试确认查询、整理、筛选、排序、随机选择和写入阶段耗时进入每日日志文件；./init.sh 结果为 67 passed，Ruff 检查和格式检查通过。"
-      ],
-      "notes": "只记录耗时与数量，不记录凭据或原文；未执行真实 Notion 发布。"
-    },
-    {
-      "id": "harness-bootstrap",
-      "priority": 4,
-      "area": "harness",
-      "title": "项目启动、验证与会话交接",
-      "user_visible_behavior": "后续 Agent 可从仓库文件了解项目边界，并用 ./init.sh 在不修改 Notion 的情况下验证代码。",
-      "status": "passing",
-      "verification": [
-        "运行 ./init.sh，确认 pytest、Ruff 检查及格式检查通过且不会发布金句。",
-        "检查 feature_list.json 可解析、只有一个或零个 in_progress，且文件中没有示例项目内容。"
-      ],
-      "evidence": [
-        "2026-10-19：./init.sh 成功，66 passed，Ruff 检查通过且 18 个文件格式正确；脚本只打印真实发布命令。feature_list.json 通过 python3 -m json.tool 解析，bash -n init.sh 与 git diff --check 均通过。"
-      ],
-      "notes": "已有 .venv 的路径通过验证；全新环境的 uv sync --locked 尚未在本沙箱验证。"
     }
   ]
 }
