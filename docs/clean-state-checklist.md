@@ -5,8 +5,8 @@
 - [ ] `pwd` 指向 `/usr/local/codex-workspace/qotd`；下一轮可以直接运行 `./docs/init.sh`。
 - [ ] `./docs/init.sh` 已运行且结果已记录；如因环境阻塞，已写明失败命令与原因。此脚本不能发布真实金句。
 - [ ] 本轮目标行为已验证；若涉及真实 Notion，离线模拟与线上验收的边界已分别说明。
-- [ ] `docs/feature_list.json` 状态、证据和 `date` 与实际相符，时间降序排列，最多一个 `in_progress`。
-- [ ] `docs/progress.md` 的本轮记录包含目标、完成内容、验证结果、风险和下一步；会话标题带北京时间，记录按时间降序排列。
+- [ ] `docs/feature_list.json` 状态、证据和 `date` 与实际相符，时间升序排列，最新在底部，最多一个 `in_progress`。
+- [ ] `docs/progress.md` 的本轮记录包含目标、完成内容、验证结果、风险和下一步；会话标题带北京时间，记录按时间升序排列，最新在底部。
 - [ ] `docs/session-handoff.md` 已更新为本轮的简短交接，未验证路径没有写成已完成。
 - [ ] `git diff --check` 与 `git status --short` 已核对；没有凭据、临时文件或未记录的半成品进入提交。
 - [ ] 只提交本轮相关且安全的文件，commit message 使用中文；提交后再次确认工作区状态，遗留改动已说明。

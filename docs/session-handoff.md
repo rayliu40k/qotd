@@ -1,6 +1,6 @@
 # 会话交接
 
-此文件只保留最近一轮的摘要；长期记录见 `docs/progress.md`，功能状态与证据见 `docs/feature_list.json`。项目根目录的 `AGENTS.md` 是 Harness 索引入口。
+此文件只保留最近一轮的摘要，不存放会话记录列表；会话记录在 `docs/progress.md` 中按时间升序排列，最新记录追加在底部。功能状态与证据见 `docs/feature_list.json`。项目根目录的 `AGENTS.md` 是 Harness 索引入口。
 
 ## 当前已验证
 
@@ -9,8 +9,8 @@
 
 ## 本轮改动
 
-- 将 `init.sh`、`feature_list.json`、`progress.md`、`clean-state-checklist.md` 和本文件移至 `docs/`。
-- 更新根目录 `AGENTS.md` 的索引、使用时机与命令，并修正验证脚本的项目根目录定位。
+- 将 `docs/feature_list.json` 中的功能和 `docs/progress.md` 中的会话记录改为按北京时间升序排列，新条目追加在底部。
+- 更新根目录 `AGENTS.md` 和收尾清单中的生成与排序规则；本文件继续只保留最近一轮摘要。
 
 ## 仍损坏或未验证
 
