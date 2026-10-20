@@ -88,7 +88,9 @@ def publish(api, config, *, now=None, sleep=time.sleep):
     day = local.astimezone(SHANGHAI).date()
     logger.info("核验日期：{}", day.isoformat())
     # 先确认管理区仍属于指定首页，避免把内容写进其他页面或用户编辑区。
+    start = time.perf_counter()
     api.preflight(config)
+    logger.info("Notion 发布前核验耗时：{:.2f} ms", (time.perf_counter() - start) * 1000)
     if api.query(
         config.daily_data_source_id, {"property": DAILY_DATE, "date": {"after": day.isoformat()}}
     ):
@@ -103,20 +105,36 @@ def publish(api, config, *, now=None, sleep=time.sleep):
     if record is not None:
         # 旧快照与关联不一致时停止，避免以覆盖掩盖已有数据损坏。
         record_quote(record)
-    quotes = read_quotes(
-        api,
-        api.query(
-            config.quotes_data_source_id,
-            {"property": QUOTE_ENABLED, "checkbox": {"equals": True}},
-        ),
-        config.page_url_template,
+    start = time.perf_counter()
+    quote_rows = api.query(
+        config.quotes_data_source_id,
+        {"property": QUOTE_ENABLED, "checkbox": {"equals": True}},
+    )
+    logger.info(
+        "Notion 查询可轮换金句耗时：{:.2f} ms，返回：{} 条",
+        (time.perf_counter() - start) * 1000,
+        len(quote_rows),
+    )
+    start = time.perf_counter()
+    quotes = read_quotes(api, quote_rows, config.page_url_template)
+    logger.info(
+        "整理金句和关联书籍耗时：{:.2f} ms，可用：{} 条",
+        (time.perf_counter() - start) * 1000,
+        len(quotes),
     )
     history = []
     # 同日旧选句不进入历史；只有当天以前最终保留的记录影响轮次。
+    start = time.perf_counter()
     rows = api.query(
         config.daily_data_source_id,
         {"property": DAILY_DATE, "date": {"before": day.isoformat()}},
     )
+    logger.info(
+        "Notion 查询历史每日记录耗时：{:.2f} ms，返回：{} 条",
+        (time.perf_counter() - start) * 1000,
+        len(rows),
+    )
+    start = time.perf_counter()
     dates = set()
     for row in rows:
         round_ = row["properties"][DAILY_ROUND].get("number")
@@ -129,11 +147,17 @@ def publish(api, config, *, now=None, sleep=time.sleep):
             raise PublicationError("历史日期有重复记录，请让 Codex 核查。")
         dates.add(old_day)
         history.append((relation_id(row, DAILY_QUOTE), int(round_)))
+    logger.info(
+        "核对轮换历史耗时：{:.2f} ms，记录：{} 条",
+        (time.perf_counter() - start) * 1000,
+        len(history),
+    )
     quote, round_ = choose_quote(quotes, history)
     logger.info("选中金句：{}，轮次：{}，候选数：{}", quote.id, round_, len(quotes))
     # 写入前构造全部负载；新建包含正文，覆盖则先更新快照再更新正文。
     blocks = render(quote, day)
     properties = record_properties(day, quote, round_, config.pending_status)
+    start = time.perf_counter()
     if record is None:
         try:
             api.create_record(config.daily_data_source_id, properties, blocks)
@@ -151,6 +175,7 @@ def publish(api, config, *, now=None, sleep=time.sleep):
                 ) from error
     else:
         api.update_record(record["id"], properties, blocks)
+    logger.info("Notion 保存每日记录耗时：{:.2f} ms", (time.perf_counter() - start) * 1000)
     # 更新首页前读回；若出现并发创建或写入不一致，停止发布。
     record = existing()
     if record is None:
@@ -160,8 +185,12 @@ def publish(api, config, *, now=None, sleep=time.sleep):
         raise PublicationError("当天记录与本次选句不一致，未更新首页；请让 Codex 核查。")
     logger.info("使用每日记录：{}，金句：{}", record["id"], quote.id)
     # 首页全部更新完成后才标记发布；失败时下次运行会重新抽取并覆盖。
+    start = time.perf_counter()
     api.update_home(config.managed_block_id, blocks)
+    logger.info("Notion 更新首页耗时：{:.2f} ms", (time.perf_counter() - start) * 1000)
+    start = time.perf_counter()
     api.mark_published(record["id"], config.published_status)
+    logger.info("Notion 标记发布耗时：{:.2f} ms", (time.perf_counter() - start) * 1000)
     logger.info("首页已更新，每日记录已标记发布")
     return {
         "status": RESULT_STATUS_PUBLISHED,

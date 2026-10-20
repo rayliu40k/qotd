@@ -6,7 +6,10 @@
 import json
 import random
 from dataclasses import asdict, dataclass
+from time import perf_counter
 from uuid import UUID
+
+from loguru import logger
 
 from .highlights import ranges_from_rich_text, validate_ranges
 from .settings import (
@@ -161,10 +164,27 @@ def choose_quote(
     """
     if not quotes:
         raise PublicationError("没有可参与轮换的金句，请先让 Codex 初始化。")
+    filter_start = perf_counter()
     round_ = max((r for _, r in history), default=1)
     seen = {canonical_id(id_) for id_, r in history if r == round_}
     candidates = [q for q in quotes if canonical_id(q.id) not in seen]
     if not candidates:
         round_ += 1
         candidates = quotes
-    return (rng or random.SystemRandom()).choice(sorted(candidates, key=lambda q: q.id)), round_
+    filter_ms = (perf_counter() - filter_start) * 1000
+
+    sort_start = perf_counter()
+    ordered = sorted(candidates, key=lambda q: q.id)
+    sort_ms = (perf_counter() - sort_start) * 1000
+
+    random_start = perf_counter()
+    selected = (rng or random.SystemRandom()).choice(ordered)
+    random_ms = (perf_counter() - random_start) * 1000
+    logger.info(
+        "抽选耗时：筛选：{:.2f} ms，排序：{:.2f} ms，随机选择：{:.2f} ms，候选：{} 条",
+        filter_ms,
+        sort_ms,
+        random_ms,
+        len(candidates),
+    )
+    return selected, round_

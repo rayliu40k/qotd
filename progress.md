@@ -20,3 +20,12 @@
 - 修改后验证：`./init.sh` 成功，66 passed；Ruff 检查通过，18 个文件格式正确。`python3 -m json.tool feature_list.json`、`bash -n init.sh`、`git diff --check` 均通过。脚本未执行真实发布。
 - 真实 Notion 读写：本轮未执行；首页和数据库的实时状态尚未核验。
 - 下一步：按用户新需求选择单项工作；修改 Python 时先运行 `./init.sh`，完成后记录实际验证结果。
+
+### 2026-10-20：记录每日发布关键阶段耗时
+
+- 本轮目标：在控制台与每日文件日志中记录 Notion 查询、候选整理、筛选、排序、随机选择和写入阶段耗时。
+- 已完成：在发布流程和抽选函数中用 `perf_counter` 计时，只记录毫秒数与记录数量；增加模拟 Notion 发布的文件日志验证。
+- 运行过的验证：修改前 `./init.sh` 为 66 passed；修改后 `./init.sh` 为 67 passed，Ruff 检查和格式检查通过。
+- 已记录证据：`tests/test_publication.py::test_publication_timing_is_written_to_daily_log` 从每日文件日志核对各阶段耗时。
+- 已知风险或未解决问题：本轮未进行真实 Notion 发布，无法给出线上请求的实际耗时。
+- 下一步最佳动作：下次正常发布后查看 `logs/qotd_YYYY-MM-DD.log`，根据实际耗时决定是否优化分页读取。

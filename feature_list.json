@@ -1,6 +1,6 @@
 {
   "project": "每日金句（qotd）",
-  "last_updated": "2026-10-19",
+  "last_updated": "2026-10-20",
   "rules": {
     "single_active_feature": true,
     "passing_requires_evidence": true,
@@ -60,6 +60,22 @@
         "2026-10-19：全套离线 pytest -q 结果为 66 passed，包含 Notion 接口模拟用例。"
       ],
       "notes": "线上 Notion 权限与实时数据未在本次会话核验。"
+    },
+    {
+      "id": "timing-logs",
+      "priority": 1,
+      "area": "observability",
+      "title": "记录每日发布关键阶段耗时",
+      "user_visible_behavior": "运行每日发布时，控制台和每日文件日志显示 Notion 金句查询、数据整理、筛选、排序与随机选择的耗时。",
+      "status": "passing",
+      "verification": [
+        "使用模拟 Notion 数据发布，检查关键阶段耗时被写入日志文件。",
+        "运行 ./init.sh，确认原有发布逻辑、pytest 与 Ruff 仍通过。"
+      ],
+      "evidence": [
+        "2026-10-20：模拟 Notion 发布测试确认查询、整理、筛选、排序、随机选择和写入阶段耗时进入每日日志文件；./init.sh 结果为 67 passed，Ruff 检查和格式检查通过。"
+      ],
+      "notes": "只记录耗时与数量，不记录凭据或原文；未执行真实 Notion 发布。"
     },
     {
       "id": "harness-bootstrap",

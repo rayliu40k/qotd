@@ -1,12 +1,15 @@
 import copy
 import json
+import re
 from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 from uuid import UUID
 
 import pytest
+from loguru import logger
 
 from qotd.cli import Config
+from qotd.logging_setup import configure_logging
 from qotd.models import PublicationError, Quote, choose_quote, plain, rich_text
 from qotd.notion import UncertainCreate
 from qotd.publisher import publish, read_quotes, record_properties
@@ -130,6 +133,31 @@ class FakeNotion:
             raise PublicationError("failed status write")
         row = next(row for row in self.records if row["id"] == id_)
         row["properties"]["发布状态"] = {"select": {"name": status}}
+
+
+def test_publication_timing_is_written_to_daily_log(tmp_path):
+    """用模拟 Notion 验证各关键阶段的耗时进入每日文件日志。"""
+    try:
+        configure_logging(tmp_path)
+        publish(FakeNotion(), CONFIG, now=NOW)
+        log_file = next((tmp_path / "logs").glob("qotd_*.log"))
+        content = log_file.read_text()
+        for label in (
+            "Notion 发布前核验耗时",
+            "Notion 查询可轮换金句耗时",
+            "整理金句和关联书籍耗时",
+            "Notion 查询历史每日记录耗时",
+            "核对轮换历史耗时",
+            "筛选",
+            "排序",
+            "随机选择",
+            "Notion 保存每日记录耗时",
+            "Notion 更新首页耗时",
+            "Notion 标记发布耗时",
+        ):
+            assert re.search(rf"{re.escape(label)}：\d+\.\d{{2}} ms", content)
+    finally:
+        logger.remove()
 
 
 def test_complete_round_and_next_round_with_real_reservations():
