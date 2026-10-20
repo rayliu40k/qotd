@@ -3,9 +3,9 @@
 每次运行都重新抽取；同一天复用并覆盖唯一的每日记录，最后更新首页。
 """
 
+import asyncio
 import time
-from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime
+from datetime import date, datetime
 
 from loguru import logger
 
@@ -60,7 +60,7 @@ def record_properties(day, quote, round_, pending_status=PENDING_STATUS):
     }
 
 
-def read_quotes(api, rows, page_url_template):
+async def read_quotes(api, rows, page_url_template):
     """校验候选金句关联，并发读取不同书籍后组装完整候选项。
 
     已归档或进入垃圾箱的金句不会参加轮换；同一本书仅查询一次。
@@ -72,9 +72,19 @@ def read_quotes(api, rows, page_url_template):
         return []
     # 关联 ID 已全部核验，下面只并发读取不同书籍；共享 API 客户端用于连接复用。
     start = time.perf_counter()
-    with ThreadPoolExecutor(max_workers=min(BOOK_READ_WORKERS, len(book_ids))) as executor:
-        futures = {id_: executor.submit(api.page, id_) for id_ in book_ids}
-        books = {id_: future.result() for id_, future in futures.items()}
+    semaphore = asyncio.Semaphore(BOOK_READ_WORKERS)
+
+    async def load_book(id_):
+        """限制同时读取的书籍数量，避免一次请求全部书籍。"""
+        async with semaphore:
+            return await api.page(id_)
+
+    # 等待所有书籍请求结束后再传播错误，避免关闭客户端时仍有请求在后台运行。
+    book_pages = await asyncio.gather(*(load_book(id_) for id_ in book_ids), return_exceptions=True)
+    for page in book_pages:
+        if isinstance(page, BaseException):
+            raise page
+    books = dict(zip(book_ids, book_pages, strict=True))
     logger.info(
         "Notion 查询关联书籍耗时：{:.2f} ms，书籍：{} 本",
         (time.perf_counter() - start) * 1000,
@@ -86,7 +96,7 @@ def read_quotes(api, rows, page_url_template):
     ]
 
 
-def publish(api, config, *, now=None, sleep=time.sleep):
+async def publish(api, config, *, now=None, sleep=asyncio.sleep):
     """发布北京时间当天的金句并返回发布摘要。
 
     ``now`` 和 ``sleep`` 用于模拟时间及恢复等待。每次运行重新选择，
@@ -98,56 +108,82 @@ def publish(api, config, *, now=None, sleep=time.sleep):
         raise PublicationError("发布时间缺少时区。")
     day = local.astimezone(SHANGHAI).date()
     logger.info("核验日期：{}", day.isoformat())
-    # 先确认管理区仍属于指定首页，避免把内容写进其他页面或用户编辑区。
-    start = time.perf_counter()
-    api.preflight(config)
-    logger.info("Notion 发布前核验耗时：{:.2f} ms", (time.perf_counter() - start) * 1000)
-    if api.query(
-        config.daily_data_source_id, {"property": DAILY_DATE, "date": {"after": day.isoformat()}}
-    ):
-        raise PublicationError("存在未来日期记录，已停止发布；请让 Codex 核查。")
+
+    async def checked_preflight():
+        """核验首页及同步块，并记录读取耗时。"""
+        start = time.perf_counter()
+        await api.preflight(config)
+        logger.info("Notion 发布前核验耗时：{:.2f} ms", (time.perf_counter() - start) * 1000)
+
+    async def load_daily():
+        """一次读取每日记录，由本机内存区分未来、当天和历史。"""
+        start = time.perf_counter()
+        rows = await api.query(config.daily_data_source_id)
+        logger.info(
+            "Notion 查询每日记录耗时：{:.2f} ms，返回：{} 条",
+            (time.perf_counter() - start) * 1000,
+            len(rows),
+        )
+        return rows
+
+    async def load_quotes():
+        """分页读取可轮换金句，并异步读取其关联书籍。"""
+        start = time.perf_counter()
+        quote_rows = await api.query(
+            config.quotes_data_source_id,
+            {"property": QUOTE_ENABLED, "checkbox": {"equals": True}},
+        )
+        logger.info(
+            "Notion 查询可轮换金句耗时：{:.2f} ms，返回：{} 条",
+            (time.perf_counter() - start) * 1000,
+            len(quote_rows),
+        )
+        start = time.perf_counter()
+        quotes = await read_quotes(api, quote_rows, config.page_url_template)
+        logger.info(
+            "整理金句和关联书籍耗时：{:.2f} ms，可用：{} 条",
+            (time.perf_counter() - start) * 1000,
+            len(quotes),
+        )
+        return quotes
+
+    # 三组读取彼此独立；收齐结果并完成所有校验后才允许写入 Notion。
+    preflight_result, daily_result, quote_result = await asyncio.gather(
+        checked_preflight(), load_daily(), load_quotes(), return_exceptions=True
+    )
+    for result in (preflight_result, daily_result, quote_result):
+        if isinstance(result, BaseException):
+            raise result
+    quotes = quote_result
+    daily_rows = daily_result
     day_filter = {"property": DAILY_DATE, "date": {"equals": day.isoformat()}}
 
-    def existing():
-        """查询当天唯一记录，供覆盖和不确定创建后的核对使用。"""
-        return only_record(api.query(config.daily_data_source_id, day_filter))
+    async def existing():
+        """写入后查询当天唯一记录，检查并发创建和保存结果。"""
+        return only_record(await api.query(config.daily_data_source_id, day_filter))
 
-    record = existing()
+    current_rows = []
+    history_rows = []
+    for row in daily_rows:
+        try:
+            record_day = date.fromisoformat(row["properties"][DAILY_DATE]["date"]["start"])
+        except (KeyError, TypeError, ValueError) as error:
+            raise PublicationError("每日记录日期无效，请让 Codex 核查。") from error
+        if record_day > day:
+            raise PublicationError("存在未来日期记录，已停止发布；请让 Codex 核查。")
+        if record_day == day:
+            current_rows.append(row)
+        else:
+            history_rows.append(row)
+    record = only_record(current_rows)
     if record is not None:
         # 旧快照与关联不一致时停止，避免以覆盖掩盖已有数据损坏。
         record_quote(record)
-    start = time.perf_counter()
-    quote_rows = api.query(
-        config.quotes_data_source_id,
-        {"property": QUOTE_ENABLED, "checkbox": {"equals": True}},
-    )
-    logger.info(
-        "Notion 查询可轮换金句耗时：{:.2f} ms，返回：{} 条",
-        (time.perf_counter() - start) * 1000,
-        len(quote_rows),
-    )
-    start = time.perf_counter()
-    quotes = read_quotes(api, quote_rows, config.page_url_template)
-    logger.info(
-        "整理金句和关联书籍耗时：{:.2f} ms，可用：{} 条",
-        (time.perf_counter() - start) * 1000,
-        len(quotes),
-    )
     history = []
     # 同日旧选句不进入历史；只有当天以前最终保留的记录影响轮次。
     start = time.perf_counter()
-    rows = api.query(
-        config.daily_data_source_id,
-        {"property": DAILY_DATE, "date": {"before": day.isoformat()}},
-    )
-    logger.info(
-        "Notion 查询历史每日记录耗时：{:.2f} ms，返回：{} 条",
-        (time.perf_counter() - start) * 1000,
-        len(rows),
-    )
-    start = time.perf_counter()
     dates = set()
-    for row in rows:
+    for row in history_rows:
         round_ = row["properties"][DAILY_ROUND].get("number")
         if isinstance(round_, bool) or not isinstance(round_, (int, float)) or round_ < 1:
             raise PublicationError("历史轮次无效，请让 Codex 核查。")
@@ -171,13 +207,13 @@ def publish(api, config, *, now=None, sleep=time.sleep):
     start = time.perf_counter()
     if record is None:
         try:
-            api.create_record(config.daily_data_source_id, properties, blocks)
+            await api.create_record(config.daily_data_source_id, properties, blocks)
         except UncertainCreate as error:
             logger.warning("创建结果不确定，按日期查询恢复")
             # 创建响应丢失时，延迟查询是否已落库；绝不盲目重发 POST。
             for delay in CREATE_RECOVERY_DELAYS:
-                sleep(delay)
-                record = existing()
+                await sleep(delay)
+                record = await existing()
                 if record:
                     break
             if record is None:
@@ -185,10 +221,10 @@ def publish(api, config, *, now=None, sleep=time.sleep):
                     "创建结果仍不确定，未重复创建；请稍后重新运行核对。"
                 ) from error
     else:
-        api.update_record(record["id"], properties, blocks)
+        await api.update_record(record["id"], properties, blocks)
     logger.info("Notion 保存每日记录耗时：{:.2f} ms", (time.perf_counter() - start) * 1000)
     # 更新首页前读回；若出现并发创建或写入不一致，停止发布。
-    record = existing()
+    record = await existing()
     if record is None:
         raise PublicationError("当天记录暂不可读，未更新首页；请稍后重试。")
     saved_quote = record_quote(record)
@@ -197,10 +233,10 @@ def publish(api, config, *, now=None, sleep=time.sleep):
     logger.info("使用每日记录：{}，金句：{}", record["id"], quote.id)
     # 首页全部更新完成后才标记发布；失败时下次运行会重新抽取并覆盖。
     start = time.perf_counter()
-    api.update_home(config.managed_block_id, blocks)
+    await api.update_home(config.managed_block_id, blocks)
     logger.info("Notion 更新首页耗时：{:.2f} ms", (time.perf_counter() - start) * 1000)
     start = time.perf_counter()
-    api.mark_published(record["id"], config.published_status)
+    await api.mark_published(record["id"], config.published_status)
     logger.info("Notion 标记发布耗时：{:.2f} ms", (time.perf_counter() - start) * 1000)
     logger.info("首页已更新，每日记录已标记发布")
     return {

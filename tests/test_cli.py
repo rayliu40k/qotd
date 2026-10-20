@@ -72,16 +72,24 @@ def test_cli_reports_success_through_logger_without_print(monkeypatch, capsys):
     monkeypatch.setattr(cli, "configure_logging", lambda _: None)
     monkeypatch.setattr(cli, "load_dotenv", lambda _: None)
     monkeypatch.setenv("NOTION_TOKEN", "test-token")
-    monkeypatch.setattr(cli, "Notion", lambda _: type("Api", (), {"close": lambda self: None})())
-    monkeypatch.setattr(
-        cli,
-        "publish",
-        lambda _api, _config: {
+
+    class Api:
+        async def aclose(self):
+            pass
+
+    async def fake_publish(_api, _config):
+        return {
             "date": "2026-10-17",
             "record_id": "id",
             "quote": "测试金句",
             "home": "https://notion.so/id",
-        },
+        }
+
+    monkeypatch.setattr(cli, "Notion", lambda _: Api())
+    monkeypatch.setattr(
+        cli,
+        "publish",
+        fake_publish,
     )
     monkeypatch.setattr("sys.argv", ["qotd", "daily"])
     try:

@@ -5,6 +5,7 @@
 """
 
 import argparse
+import asyncio
 import fcntl
 import os
 import tempfile
@@ -95,6 +96,15 @@ def publication_lock(home_id):
             fcntl.flock(handle, fcntl.LOCK_UN)
 
 
+async def run_publication(token: str, config: Config):
+    """在同一事件循环中完成发布，并始终关闭异步 Notion 客户端。"""
+    api = Notion(token)
+    try:
+        return await publish(api, config)
+    finally:
+        await api.aclose()
+
+
 def main():
     """运行每日发布并以日志报告结果，成功返回零状态码。"""
     parser = argparse.ArgumentParser(description="发布 Notion 每日金句")
@@ -120,11 +130,7 @@ def main():
             raise PublicationError("请在项目 .env 中配置 NOTION_TOKEN，并在 Notion 授权连接。")
         logger.info("开始发布：首页：{}", config.home_page_id)
         with publication_lock(config.home_page_id):
-            api = Notion(token)
-            try:
-                result = publish(api, config)
-            finally:
-                api.close()
+            result = asyncio.run(run_publication(token, config))
         logger.info(
             "发布成功：日期：{}，记录：{}，金句：{}，首页：{}",
             result["date"],

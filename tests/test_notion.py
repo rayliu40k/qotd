@@ -1,6 +1,6 @@
+import asyncio
 import json
 from datetime import date
-from threading import Barrier, Lock
 from types import SimpleNamespace
 from uuid import UUID
 
@@ -12,14 +12,26 @@ from qotd.notion import Notion, UncertainCreate
 from qotd.render import render
 
 
-def api(handler, sleep=lambda _: None):
+def api(handler, sleep=asyncio.sleep):
     return Notion(
         "unused",
         sleep=sleep,
-        client=httpx.Client(
+        client=httpx.AsyncClient(
             base_url="https://api.notion.com/v1/", transport=httpx.MockTransport(handler)
         ),
     )
+
+
+def invoke(adapter, method, *args, **kwargs):
+    """运行异步 SDK 操作并关闭测试客户端。"""
+
+    async def run():
+        try:
+            return await getattr(adapter, method)(*args, **kwargs)
+        finally:
+            await adapter.aclose()
+
+    return asyncio.run(run())
 
 
 def children():
@@ -44,7 +56,7 @@ def test_query_preserves_filter_across_pages():
         )
 
     filter_ = {"property": "参与轮换", "checkbox": {"equals": True}}
-    assert len(api(handler).query("source", filter_)) == 2
+    assert len(invoke(api(handler), "query", "source", filter_)) == 2
     assert requests[1]["start_cursor"] == "cursor"
     assert all(request["filter"] == filter_ for request in requests)
 
@@ -64,18 +76,22 @@ def test_children_paginate():
             },
         )
 
-    assert len(api(handler).children("parent")) == 2
+    assert len(invoke(api(handler), "children", "parent")) == 2
     assert requests[1].url.params["start_cursor"] == "cursor"
 
 
 def test_rate_limit_delay_and_server_retry():
     statuses = iter([429, 503, 200])
     waits = []
+
+    async def sleep(delay):
+        waits.append(delay)
+
     adapter = api(
         lambda _: httpx.Response(next(statuses), headers={"Retry-After": "3"}, json={}),
-        waits.append,
+        sleep,
     )
-    adapter.page("id")
+    invoke(adapter, "page", "id")
     assert waits == [3, 2]
 
 
@@ -92,14 +108,14 @@ def test_create_is_never_blindly_retried(failure):
         return httpx.Response(200, text="not json")
 
     with pytest.raises(UncertainCreate):
-        api(handler).create_record("source", {}, [])
+        invoke(api(handler), "create_record", "source", {}, [])
     assert len(calls) == 1
     assert calls[0].url.path == "/v1/pages"
 
 
 def test_server_errors_and_credentials_never_leak():
     with pytest.raises(PublicationError) as error:
-        api(lambda _: httpx.Response(401, json={"message": "secret-key"})).page("id")
+        invoke(api(lambda _: httpx.Response(401, json={"message": "secret-key"})), "page", "id")
     assert "secret-key" not in str(error.value)
 
 
@@ -119,7 +135,7 @@ def test_layout_changes_stop_before_any_mutation(change):
         return httpx.Response(200, json={"results": rows, "has_more": False})
 
     with pytest.raises(PublicationError):
-        api(handler).update_home("owned", children())
+        invoke(api(handler), "update_home", "owned", children())
     assert methods == ["GET"]
 
 
@@ -133,7 +149,7 @@ def test_home_updates_only_owned_blocks_and_date_last():
         writes.append((request.url.path, json.loads(request.content)))
         return httpx.Response(200, json={})
 
-    api(handler).update_home("owned", rows)
+    invoke(api(handler), "update_home", "owned", rows)
     assert len(writes) == 6
     assert [p for p, _ in writes] == [f"/v1/blocks/slot{i}" for i in (1, 2, 3, 4, 5, 0)]
 
@@ -149,7 +165,7 @@ def test_existing_daily_record_updates_properties_and_all_blocks():
         return httpx.Response(200, json={})
 
     properties = {"轮次": {"number": 2}, "发布状态": {"select": {"name": "待发布"}}}
-    api(handler).update_record("record", properties, rows)
+    invoke(api(handler), "update_record", "record", properties, rows)
     assert writes[0] == ("/v1/pages/record", {"properties": properties})
     assert [path for path, _ in writes[1:]] == [f"/v1/blocks/slot{i}" for i in (1, 2, 3, 4, 5, 0)]
 
@@ -164,7 +180,7 @@ def test_changed_daily_record_layout_stops_before_property_update():
         return httpx.Response(200, json={"results": rows, "has_more": False})
 
     with pytest.raises(PublicationError, match="每日记录空白间隔"):
-        api(handler).update_record("record", {}, children())
+        invoke(api(handler), "update_record", "record", {}, children())
     assert methods == ["GET"]
 
 
@@ -178,6 +194,8 @@ def test_preflight_rejects_sync_block_from_another_page():
     )
 
     def handler(request):
+        if request.url.path.endswith("/children"):
+            return httpx.Response(200, json={"results": children(), "has_more": False})
         if "/blocks/" in request.url.path:
             return httpx.Response(
                 200,
@@ -190,10 +208,10 @@ def test_preflight_rejects_sync_block_from_another_page():
         return httpx.Response(200, json={})
 
     with pytest.raises(PublicationError, match="原始同步块"):
-        api(handler).preflight(config)
+        invoke(api(handler), "preflight", config)
 
 
-def test_preflight_reads_all_objects_concurrently_before_validation():
+def test_preflight_reads_home_objects_concurrently_before_validation():
     home = str(UUID(int=100))
     config = SimpleNamespace(
         home_page_id=home,
@@ -201,15 +219,15 @@ def test_preflight_reads_all_objects_concurrently_before_validation():
         quotes_data_source_id="quotes",
         daily_data_source_id="daily",
     )
-    arrived = Barrier(5, timeout=2)
+    arrived = asyncio.Event()
     paths = []
-    lock = Lock()
 
-    def handler(request):
-        with lock:
-            paths.append(request.url.path)
-        # 串行读取无法使五个请求同时到达，测试会因屏障超时而失败。
-        arrived.wait()
+    async def handler(request):
+        paths.append(request.url.path)
+        if len(paths) == 3:
+            arrived.set()
+        # 三项首页核验读取需要同时到达；数据源由独立查询验证。
+        await asyncio.wait_for(arrived.wait(), timeout=2)
         if request.url.path == "/v1/blocks/managed/children":
             return httpx.Response(200, json={"results": children(), "has_more": False})
         if request.url.path == "/v1/blocks/managed":
@@ -223,15 +241,9 @@ def test_preflight_reads_all_objects_concurrently_before_validation():
             )
         return httpx.Response(200, json={})
 
-    adapter = api(handler)
-    try:
-        adapter.preflight(config)
-    finally:
-        adapter.close()
-    assert len(paths) == 5
+    invoke(api(handler), "preflight", config)
+    assert len(paths) == 3
     assert set(paths) == {
-        "/v1/data_sources/quotes",
-        "/v1/data_sources/daily",
         f"/v1/pages/{home}",
         "/v1/blocks/managed",
         "/v1/blocks/managed/children",

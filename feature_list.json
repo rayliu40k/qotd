@@ -14,6 +14,22 @@
   },
   "features": [
     {
+      "id": "async-publisher",
+      "priority": 1,
+      "area": "publication",
+      "title": "异步并发与减少 Notion 读取次数",
+      "user_visible_behavior": "每日发布用 asyncio 异步读取，合并当天、未来与历史记录查询，减少 Notion 往返，同时保持轮换和写入保护。",
+      "status": "passing",
+      "verification": [
+        "模拟 Notion 验证独立读取并发、每日记录单次读取与分类、分页及书籍关联复用。",
+        "验证同日覆盖、轮换、失败恢复和写入顺序；运行 ./init.sh。"
+      ],
+      "evidence": [
+        "2026-10-20：tests/test_publication.py 验证首页核验、金句读取和每日记录读取重叠执行；发布前每日记录只查询一次并在内存分类，写入后仍按当天日期核验唯一记录。关联书籍失败时等待其余请求结束且不写入；同日覆盖、轮换、分页、失败恢复等现有用例通过。./init.sh 结果为 72 passed，Ruff 检查及格式检查通过。"
+      ],
+      "notes": "仅完成离线模拟验证；未运行会覆盖真实 Notion 当天记录的发布命令，真实耗时待下一次正常发布观察。"
+    },
+    {
       "id": "parallel-book-reads",
       "priority": 1,
       "area": "publication",

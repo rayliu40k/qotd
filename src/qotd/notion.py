@@ -4,13 +4,18 @@
 并把创建结果不确定的情况交给上层按日期查询恢复。
 """
 
-import time
-from concurrent.futures import ThreadPoolExecutor
+import asyncio
+from time import perf_counter
 
 import httpx
 from loguru import logger
-from notion_client import APIResponseError, Client, RequestTimeoutError, UnknownHTTPResponseError
-from notion_client.helpers import collect_paginated_api
+from notion_client import (
+    APIResponseError,
+    AsyncClient,
+    RequestTimeoutError,
+    UnknownHTTPResponseError,
+)
+from notion_client.helpers import async_collect_paginated_api
 
 from .models import PublicationError, canonical_id
 from .render import SLOT_TYPES, SLOT_WRITE_ORDER
@@ -29,20 +34,22 @@ class UncertainCreate(PublicationError):
 class Notion:
     """封装 SDK 端点、有限重试和首页结构保护。"""
 
-    def __init__(self, token: str, *, client=None, sleep=time.sleep):
+    def __init__(self, token: str, *, client=None, sleep=asyncio.sleep):
         """创建 SDK 客户端并关闭 SDK 自带的创建请求重试。
 
         ``client`` 和 ``sleep`` 允许测试注入模拟 HTTP 客户端及等待函数。
         SDK 不自动重试创建操作，避免超时后生成重复的每日记录。
         """
-        self.client = Client(auth=token, client=client, retry=False, timeout_ms=NOTION_TIMEOUT_MS)
+        self.client = AsyncClient(
+            auth=token, client=client, retry=False, timeout_ms=NOTION_TIMEOUT_MS
+        )
         self.sleep = sleep
 
-    def close(self):
+    async def aclose(self):
         """释放 SDK 的 HTTP 连接。"""
-        self.client.close()
+        await self.client.aclose()
 
-    def _call(self, operation, label: str, *, create: bool = False):
+    async def _call(self, operation, label: str, *, create: bool = False):
         """执行 SDK 请求并有限重试，返回其响应数据。
 
         ``create`` 指示写入是否会新增每日记录。创建请求遇到超时或
@@ -51,7 +58,15 @@ class Notion:
         """
         for attempt in range(NOTION_MAX_ATTEMPTS):
             try:
-                return operation()
+                start = perf_counter()
+                response = await operation()
+                logger.info(
+                    "Notion 请求耗时：{}：{:.2f} ms，尝试：{}",
+                    label,
+                    (perf_counter() - start) * 1000,
+                    attempt + 1,
+                )
+                return response
             except (APIResponseError, UnknownHTTPResponseError) as error:
                 status = error.status
                 logger.warning(
@@ -67,13 +82,13 @@ class Notion:
                         delay = float(retry_after)
                     except ValueError:
                         delay = 2**attempt
-                    self.sleep(min(60, max(0, delay)))
+                    await self.sleep(min(60, max(0, delay)))
                     continue
                 if create and status >= 500:
                     # 服务端可能已经写入；上层只能按日期查询，不能重发创建请求。
                     raise UncertainCreate("创建结果不确定，正在核对 Notion。") from error
                 if not create and status >= 500 and attempt < NOTION_MAX_ATTEMPTS - 1:
-                    self.sleep(2**attempt)
+                    await self.sleep(2**attempt)
                     continue
                 raise PublicationError(
                     f"Notion {label}失败（HTTP {status}）。请检查连接权限。"
@@ -89,10 +104,10 @@ class Notion:
                     raise UncertainCreate("创建结果不确定，正在核对 Notion。") from error
                 if attempt == NOTION_MAX_ATTEMPTS - 1:
                     raise PublicationError(f"Notion {label}失败，请稍后重试。") from error
-                self.sleep(2**attempt)
+                await self.sleep(2**attempt)
         raise PublicationError(f"Notion {label}重试已用尽。")
 
-    def query(self, source, filter_=None):
+    async def query(self, source, filter_=None):
         """分页查询一个数据源，并返回全部页面记录。
 
         每一页都使用相同的 ``filter_``，直到 SDK 报告没有后续游标。
@@ -102,34 +117,39 @@ class Notion:
             params["filter"] = filter_
         rows = []
         cursor = None
+        page_number = 0
         while True:
+            page_number += 1
             page_params = dict(params)
             if cursor:
                 page_params["start_cursor"] = cursor
-            data = self._call(lambda: self.client.data_sources.query(**page_params), "查询数据源")
+            data = await self._call(
+                lambda: self.client.data_sources.query(**page_params),
+                f"查询数据源 {source} 第{page_number}页",
+            )
             rows.extend(data["results"])
             if not data.get("has_more"):
                 return rows
             cursor = data["next_cursor"]
 
-    def children(self, parent):
+    async def children(self, parent):
         """使用 SDK 辅助函数读取全部子块。"""
-        return self._call(
-            lambda: collect_paginated_api(self.client.blocks.children.list, block_id=parent),
-            "读取区块",
+        return await self._call(
+            lambda: async_collect_paginated_api(self.client.blocks.children.list, block_id=parent),
+            f"读取区块 {parent}",
         )
 
-    def page(self, id_):
+    async def page(self, id_):
         """读取书籍或首页页面。"""
-        return self._call(lambda: self.client.pages.retrieve(page_id=id_), "读取页面")
+        return await self._call(lambda: self.client.pages.retrieve(page_id=id_), f"读取页面 {id_}")
 
-    def slots(self, parent, label="首页"):
+    async def slots(self, parent, label="首页"):
         """读取并验证首页或每日记录内的六个固定区块。
 
         区块类型、子内容或两个空白区发生变化时抛出 ``PublicationError``，
         使调用方在写入前停止。
         """
-        rows = self.children(parent)
+        rows = await self.children(parent)
         if tuple(row["type"] for row in rows) != SLOT_TYPES or any(
             row.get("has_children") or row.get("archived") for row in rows
         ):
@@ -138,32 +158,25 @@ class Notion:
             raise PublicationError(f"{label}空白间隔中有用户内容，已停止更新；请让 Codex 核查。")
         return rows
 
-    def preflight(self, config):
-        """并发读取数据源与首页区块，再统一核验并阻止错误写入。"""
-        # 五个对象均由配置中的 ID 定位，读取彼此独立；只在全部返回后进入写入流程。
-        with ThreadPoolExecutor(max_workers=5) as executor:
-            sources = [
-                executor.submit(
-                    self._call,
-                    lambda source=source: self.client.data_sources.retrieve(data_source_id=source),
-                    "读取数据源",
-                )
-                for source in (config.quotes_data_source_id, config.daily_data_source_id)
-            ]
-            home_result = executor.submit(self.page, config.home_page_id)
-            block_result = executor.submit(
-                self._call,
+    async def preflight(self, config):
+        """并发核验首页与受管理区块；数据源由后续查询验证可访问。"""
+        # 数据源读取会与本核验同时执行，不再重复调用 retrieve。
+        results = await asyncio.gather(
+            self.page(config.home_page_id),
+            self._call(
                 lambda: self.client.blocks.retrieve(block_id=config.managed_block_id),
                 "读取管理块",
-            )
-            slots_result = executor.submit(self.slots, config.managed_block_id)
-        # 保留原有校验顺序和错误信息；任何读取或结构校验失败都不会写入。
-        for source_result in sources:
-            source_result.result()
-        home = home_result.result()
+            ),
+            self.slots(config.managed_block_id),
+            return_exceptions=True,
+        )
+        # 请求全部结束后再传播错误，避免关闭客户端时留下仍在运行的协程。
+        for result in results:
+            if isinstance(result, BaseException):
+                raise result
+        home, block, _ = results
         if home.get("archived") or home.get("in_trash"):
             raise PublicationError("首页已删除，请让 Codex 核查配置。")
-        block = block_result.result()
         if (
             block.get("type") != "synced_block"
             or block.get("synced_block", {}).get("synced_from") is not None
@@ -172,14 +185,13 @@ class Notion:
             != canonical_id(config.home_page_id)
         ):
             raise PublicationError("首页发布区域不是指定页面的原始同步块，请让 Codex 核查。")
-        slots_result.result()
 
-    def create_record(self, source, properties, blocks):
+    async def create_record(self, source, properties, blocks):
         """创建包含快照的每日记录，返回 SDK 响应。
 
         不确定是否写入成功时抛出 ``UncertainCreate``，调用方负责查询。
         """
-        return self._call(
+        return await self._call(
             lambda: self.client.pages.create(
                 parent={"type": "data_source_id", "data_source_id": source},
                 properties=properties,
@@ -189,42 +201,42 @@ class Notion:
             create=True,
         )
 
-    def update_record(self, id_, properties, blocks):
+    async def update_record(self, id_, properties, blocks):
         """原地覆盖当天记录的属性和六个正文块，保留页面 ID。
 
         先确认旧正文没有被用户改成其他结构，再保存新快照和待发布状态；
         正文按日期最后的顺序更新，中途失败由下次运行重新抽取并覆盖。
         """
-        rows = self.slots(id_, "每日记录")
-        self._call(
+        rows = await self.slots(id_, "每日记录")
+        await self._call(
             lambda: self.client.pages.update(page_id=id_, properties=properties),
             "覆盖每日记录属性",
         )
-        self._write_slots(rows, blocks, "每日记录")
+        await self._write_slots(rows, blocks, "每日记录")
 
-    def _write_slots(self, rows, blocks, label):
+    async def _write_slots(self, rows, blocks, label):
         """逐块更新已核验的六个阅读区块，并在最后更新日期。"""
         for i in SLOT_WRITE_ORDER:
             kind = blocks[i]["type"]
-            self._call(
+            await self._call(
                 lambda i=i, kind=kind: self.client.blocks.update(
                     block_id=rows[i]["id"], **{kind: blocks[i][kind]}
                 ),
                 f"更新{label}区块 {i}",
             )
 
-    def update_home(self, parent, blocks):
+    async def update_home(self, parent, blocks):
         """只更新受管理的六个区块，并在最后写入日期。
 
         日期放在最后，可降低读取者看到新日期配旧金句的时间窗口。
         该操作不是事务；中途失败后下次运行重新抽取并覆盖。
         """
-        rows = self.slots(parent)
-        self._write_slots(rows, blocks, "首页")
+        rows = await self.slots(parent)
+        await self._write_slots(rows, blocks, "首页")
 
-    def mark_published(self, id_, status):
+    async def mark_published(self, id_, status):
         """在首页全部写入成功后，把每日记录更新为配置的完成状态。"""
-        self._call(
+        await self._call(
             lambda: self.client.pages.update(
                 page_id=id_, properties={DAILY_STATUS: {"select": {"name": status}}}
             ),
