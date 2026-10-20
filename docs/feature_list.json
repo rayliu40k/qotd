@@ -134,14 +134,14 @@
     },
     {
       "id": "harness-bootstrap",
-      "date": "2026-10-20 16:25:31",
+      "date": "2026-10-20 16:38:58",
       "priority": 4,
       "area": "harness",
       "title": "项目启动、验证与会话交接",
-      "user_visible_behavior": "根目录 AGENTS.md 索引 docs/ 下的状态、交接与收尾文件；Agent 可运行 ./docs/init.sh 离线验证。",
+      "user_visible_behavior": "根目录 AGENTS.md 索引 docs/ 下的状态、交接与收尾文件；代码或脚本改动运行 ./docs/init.sh，纯文档或配置改动做定向检查。",
       "status": "passing",
       "verification": [
-        "运行 ./docs/init.sh，确认 pytest、Ruff 检查及格式检查通过且不会发布金句。",
+        "涉及代码或脚本改动时运行 ./docs/init.sh，确认 pytest、Ruff 检查及格式检查通过且不会发布金句；仅修改文档或配置时做适用的定向检查。",
         "检查 docs/feature_list.json 可解析、只有一个或零个 in_progress，且文件中没有示例项目内容。",
         "核对时间字段与会话记录升序排列、交接摘要和收尾清单对应真实项目，并检查中文提交信息。",
         "确认根目录 AGENTS.md 的索引能定位 docs/ 中每个 Harness 文件，且移动后的脚本仍从项目根目录运行。"
@@ -150,7 +150,8 @@
         "2026-10-19：./init.sh 成功，66 passed，Ruff 检查通过且 18 个文件格式正确；脚本只打印真实发布命令。feature_list.json 通过 python3 -m json.tool 解析，bash -n init.sh 与 git diff --check 均通过。",
         "2026-10-20：按 Git 提交的北京时间回填历史记录时间；新增项目专用交接摘要和收尾清单，并在 AGENTS.md 规定开工及收尾使用方式。./init.sh 为 72 passed，Ruff 检查和格式检查通过；JSON 时间排序和 Markdown 会话标题经脚本核对。",
         "2026-10-20：五个 Harness 文件已移至 docs/，AGENTS.md 指向新路径；从项目根目录运行 ./docs/init.sh 为 72 passed，Ruff 检查及格式检查通过。",
-        "2026-10-20：功能清单与会话记录调整为北京时间升序，新条目置底；排序规则已同步至 AGENTS.md、收尾清单和交接摘要。./docs/init.sh 为 72 passed，Ruff 检查及格式检查通过。"
+        "2026-10-20：功能清单与会话记录调整为北京时间升序，新条目置底；排序规则已同步至 AGENTS.md、收尾清单和交接摘要。./docs/init.sh 为 72 passed，Ruff 检查及格式检查通过。",
+        "2026-10-20：补充按改动范围选择验证的规则。修改前基线 ./docs/init.sh 为 72 passed，Ruff 检查和格式检查通过；修改后解析 JSON，核对 8 个功能与 9 条会话按时间升序、至多一个 in_progress、索引文件存在，git diff --check 通过；仅改文档与配置，未重复运行完整测试。"
       ],
       "notes": "已有 .venv 的路径通过验证；全新环境的 uv sync --locked 尚未在本沙箱验证。"
     }

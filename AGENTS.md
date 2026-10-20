@@ -7,7 +7,7 @@
 1. 用 `pwd` 确认位于 `/usr/local/codex-workspace/qotd`。
 2. 读取 `docs/progress.md`、`docs/feature_list.json` 和 `docs/session-handoff.md`，了解已验证状态、尚未完成的工作及上一轮交接；同时核对用户本轮的实际目标，不凭空启动清单外的功能。
 3. 运行 `git status --short`、`git log --oneline -5`，保留已有未提交改动。
-4. 运行 `./docs/init.sh`。基础验证失败时，先修复或记录明确的环境 blocker，再开发目标功能。
+4. 根据本轮改动范围选择验证：涉及 Python、测试或可执行脚本时运行 `./docs/init.sh`；仅修改文档或配置时，检查相关文件即可，无需运行该脚本。验证失败时，先修复或记录明确的 blocker，再继续工作。
 5. 修改真实 Notion 内容前，读取 `qotd.toml`；初始化书籍时还要读取 `initialize-daily-quote-book` skill，并核对现有页面与记录。
 
 ## Harness 文档索引
@@ -19,7 +19,7 @@
 | 开工、查询当前状态 | `docs/progress.md` | 已验证状态与按北京时间升序排列的会话记录，新记录在底部 |
 | 开工、选择或更新功能 | `docs/feature_list.json` | 功能状态、验证要求与证据；以 `date` 升序排列，新功能在底部 |
 | 开工、接续上一轮工作 | `docs/session-handoff.md` | 最近一轮的简短交接摘要 |
-| 开工、修改后验证 | `docs/init.sh` | 从项目根目录运行的离线环境与测试入口：`./docs/init.sh` |
+| 涉及代码或脚本时验证 | `docs/init.sh` | 从项目根目录运行的离线环境与测试入口：`./docs/init.sh` |
 | 收尾、提交前 | `docs/clean-state-checklist.md` | 逐项核对验证、记录、差异及可交接状态 |
 
 ## 项目边界
@@ -34,8 +34,8 @@
 
 - 一次只推进一个明确功能；`docs/feature_list.json` 同时最多一个 `in_progress`。
 - `docs/feature_list.json` 每个功能保留北京时间 `date`（`YYYY-MM-DD HH:MM:SS`）：新建功能时记录创建时间，状态或证据有实质更新时记录该次更新时间；按此字段升序排列，最新置底。`docs/progress.md` 的会话标题使用 `### YYYY-MM-DD HH:MM:SS：主题`，会话记录也按时间升序排列，新记录追加在底部。历史时间只用可核实的来源回填，不猜测。
-- 对 Python 变更运行 `./docs/init.sh`，其中包含 pytest、Ruff 检查与格式检查。需要验证真实 Notion 行为时，先明确写入影响，再按用户授权执行；离线测试通过不能替代线上验收。
-- 不因代码存在或测试名称暗示功能完成。只有目标行为实现、要求的验证实际通过、证据写入 `docs/feature_list.json` 或 `docs/progress.md`，并且 `./docs/init.sh` 可重新运行，才能标为 `passing`。
+- 涉及 Python 源码、测试或可执行脚本（包括 `docs/init.sh`）的改动，修改后运行 `./docs/init.sh`，其中包含 pytest、Ruff 检查与格式检查。仅修改文档或配置、没有代码或脚本改动时，修改后无需运行 `./docs/init.sh`；改为检查适用的格式、解析结果、路径引用和 `git diff --check`，并记录实际检查结果。需要验证真实 Notion 行为时，先明确写入影响，再按用户授权执行；离线测试通过不能替代线上验收。
+- 不因代码存在或测试名称暗示功能完成。只有目标行为实现、适用的验证实际通过、证据写入 `docs/feature_list.json` 或 `docs/progress.md`，才能标为 `passing`；不要把文档或配置的定向检查写成已运行完整测试。
 - 不为通过检查而降低测试或验证要求。未验证的事实留空或写为“未验证”。
 
 ## 收尾
@@ -45,4 +45,4 @@
 - 对照 `docs/clean-state-checklist.md` 逐项检查。这是每轮结束前的可复用检查清单，不在文件中永久勾选；无法通过的项目写入进度和交接摘要。
 - 更新 `docs/session-handoff.md`，用简短的当前已验证状态、本轮改动、未验证事项、下一步和命令覆盖上一轮摘要；它在收尾时写、下一轮开工时读，不充当长期历史日志。
 - 核对 `git diff` 与工作区状态，只提交本轮相关且处于安全状态的文件；每次提交的 commit message 用中文，说明实际改动。
-- 下一轮应能直接运行 `./docs/init.sh` 继续工作。
+- 下一轮按改动范围选择验证；需要完整离线验证时，应能直接运行 `./docs/init.sh`。

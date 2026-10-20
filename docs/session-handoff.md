@@ -4,13 +4,13 @@
 
 ## 当前已验证
 
-- `./docs/init.sh` 是离线验证入口，会先切回项目根目录，再运行 pytest、Ruff 检查和格式检查；本轮结果为 72 个测试通过。
+- `./docs/init.sh` 是离线验证入口，会先切回项目根目录，再运行 pytest、Ruff 检查和格式检查；本轮修改前基线为 72 个测试通过。
 - Python 发布程序从 Notion 读取已初始化的金句，并更新北京时间当天唯一的每日记录和首页；同日重跑会覆盖当天记录。上述行为由模拟 Notion 测试验证。
 
 ## 本轮改动
 
-- 将 `docs/feature_list.json` 中的功能和 `docs/progress.md` 中的会话记录改为按北京时间升序排列，新条目追加在底部。
-- 更新根目录 `AGENTS.md` 和收尾清单中的生成与排序规则；本文件继续只保留最近一轮摘要。
+- 在根目录 `AGENTS.md` 中规定按改动范围选择验证：Python、测试和脚本改动运行 `./docs/init.sh`，仅文档或配置改动执行定向检查，无需重复运行完整测试。
+- 同步更新收尾清单与功能清单；本轮修改后只执行文档和配置的定向检查。
 
 ## 仍损坏或未验证
 
@@ -19,12 +19,12 @@
 
 ## 下一步最佳动作
 
-- 下一轮先读根目录 `AGENTS.md` 指向的 `docs/progress.md`、`docs/feature_list.json` 和本文件，再运行 `./docs/init.sh`；按用户新需求选择一个目标。
+- 下一轮先读根目录 `AGENTS.md` 指向的 `docs/progress.md`、`docs/feature_list.json` 和本文件，再按实际改动范围选择验证；涉及代码或脚本时运行 `./docs/init.sh`。
 - 不把 `uv run qotd daily` 当作 smoke test，因为它会覆盖真实 Notion 当天展示。
 
 ## 命令
 
-- 离线验证：`./docs/init.sh`
+- 代码或脚本改动的离线验证：`./docs/init.sh`
 - 查看工作区：`git status --short`
 - 核对差异：`git diff --check`
 - 真实手动发布（仅在明确需要时）：`uv run qotd daily`
