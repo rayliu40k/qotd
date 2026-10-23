@@ -1,6 +1,6 @@
 {
   "project": "每日金句（qotd）",
-  "last_updated": "2026-10-20",
+  "last_updated": "2026-10-23",
   "rules": {
     "single_active_feature": true,
     "passing_requires_evidence": true,
@@ -13,23 +13,6 @@
     "passing": "要求的验证已通过，证据已记录。"
   },
   "features": [
-    {
-      "id": "publish-daily",
-      "date": "2026-10-19 23:54:46",
-      "priority": 1,
-      "area": "publication",
-      "title": "每日抽取和同日覆盖发布",
-      "user_visible_behavior": "运行 uv run qotd daily 后，Notion 首页展示当天金句；同一天再次运行覆盖当天唯一记录。",
-      "status": "passing",
-      "verification": [
-        "用模拟 Notion 数据运行 tests/test_publication.py，核对轮换、同日覆盖、单候选及失败后恢复。",
-        "运行全套离线 pytest、Ruff 检查和格式检查。"
-      ],
-      "evidence": [
-        "2026-10-19：现有 .venv 的 pytest -q 结果为 66 passed；Ruff 检查通过，18 个文件格式正确。tests/test_publication.py 覆盖同日覆盖、轮换和故障恢复。"
-      ],
-      "notes": "证据限于离线模拟；本次未运行真实 Notion 发布。"
-    },
     {
       "id": "render-context",
       "date": "2026-10-19 23:54:46",
@@ -154,6 +137,24 @@
         "2026-10-20：补充按改动范围选择验证的规则。修改前基线 ./docs/init.sh 为 72 passed，Ruff 检查和格式检查通过；修改后解析 JSON，核对 8 个功能与 9 条会话按时间升序、至多一个 in_progress、索引文件存在，git diff --check 通过；仅改文档与配置，未重复运行完整测试。"
       ],
       "notes": "已有 .venv 的路径通过验证；全新环境的 uv sync --locked 尚未在本沙箱验证。"
+    },
+    {
+      "id": "publish-daily",
+      "date": "2026-10-23 11:46:09",
+      "priority": 1,
+      "area": "publication",
+      "title": "每日抽取和同日覆盖发布",
+      "user_visible_behavior": "运行 uv run qotd daily 后，Notion 首页展示当天金句；同一天再次运行覆盖当天唯一记录。",
+      "status": "passing",
+      "verification": [
+        "用模拟 Notion 数据运行 tests/test_publication.py，核对轮换、同日覆盖、单候选及失败后恢复。",
+        "运行全套离线 pytest、Ruff 检查和格式检查。"
+      ],
+      "evidence": [
+        "2026-10-19：现有 .venv 的 pytest -q 结果为 66 passed；Ruff 检查通过，18 个文件格式正确。tests/test_publication.py 覆盖同日覆盖、轮换和故障恢复。",
+        "2026-10-23：用户 11:39 的实际发布日志记录首页六区块更新并标记发布；只读获取 Notion 首页与当日唯一每日记录，两处均为新金句“股市短期波动靠心理，中期波动靠利率，长期走势靠基本面。”，首页编辑时间为北京时间 11:39:42。浏览器截图仍是旧内容，刷新后的画面未验证；本轮未触发发布。"
+      ],
+      "notes": "离线模拟已验证发布行为；2026-10-23 通过已连接 Notion 只读确认用户实际发布结果，浏览器刷新后的显示尚未验证。"
     }
   ]
 }
