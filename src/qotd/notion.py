@@ -18,7 +18,7 @@ from notion_client import (
 from notion_client.helpers import async_collect_paginated_api
 
 from .models import PublicationError, canonical_id
-from .render import SLOT_TYPES, SLOT_WRITE_ORDER
+from .render import CONTENT_SLOT_INDICES, DATE_SLOT_INDEX, SLOT_TYPES
 from .settings import (
     DAILY_STATUS,
     NOTION_MAX_ATTEMPTS,
@@ -205,7 +205,8 @@ class Notion:
         """原地覆盖当天记录的属性和六个正文块，保留页面 ID。
 
         先确认旧正文没有被用户改成其他结构，再保存新快照和待发布状态；
-        正文按日期最后的顺序更新，中途失败由下次运行重新抽取并覆盖。
+        正文内容区块并发更新，全部成功后才更新日期。中途失败由下次运行
+        重新抽取并覆盖。
         """
         rows = await self.slots(id_, "每日记录")
         await self._call(
@@ -215,15 +216,56 @@ class Notion:
         await self._write_slots(rows, blocks, "每日记录")
 
     async def _write_slots(self, rows, blocks, label):
-        """逐块更新已核验的六个阅读区块，并在最后更新日期。"""
-        for i in SLOT_WRITE_ORDER:
+        """并发更新五个内容区块，收齐结果后最后更新日期区块。
+
+        各内容区块使用独立 ID，可以同时写入。若其中一个请求最终失败，
+        先等待其余请求结束，再抛出错误；日期和后续发布步骤不会执行。
+        """
+
+        async def write_slot(i):
+            """把单个已验证区块的内容写入对应的 Notion 区块。"""
             kind = blocks[i]["type"]
-            await self._call(
-                lambda i=i, kind=kind: self.client.blocks.update(
+            return await self._call(
+                lambda: self.client.blocks.update(
                     block_id=rows[i]["id"], **{kind: blocks[i][kind]}
                 ),
                 f"更新{label}区块 {i}",
             )
+
+        start = perf_counter()
+        logger.info(
+            "开始并发更新{}内容区块：数量：{}，区块：{}",
+            label,
+            len(CONTENT_SLOT_INDICES),
+            CONTENT_SLOT_INDICES,
+        )
+        results = await asyncio.gather(
+            *(write_slot(i) for i in CONTENT_SLOT_INDICES), return_exceptions=True
+        )
+        failures = [
+            (i, result)
+            for i, result in zip(CONTENT_SLOT_INDICES, results, strict=True)
+            if isinstance(result, BaseException)
+        ]
+        elapsed_ms = (perf_counter() - start) * 1000
+        if failures:
+            logger.error(
+                "{}内容区块并发更新失败：成功：{}，失败区块：{}，耗时：{:.2f} ms",
+                label,
+                len(CONTENT_SLOT_INDICES) - len(failures),
+                [i for i, _ in failures],
+                elapsed_ms,
+            )
+            raise failures[0][1]
+        logger.info(
+            "{}内容区块并发更新完成：成功：{}，耗时：{:.2f} ms；开始更新日期区块 {}",
+            label,
+            len(CONTENT_SLOT_INDICES),
+            elapsed_ms,
+            DATE_SLOT_INDEX,
+        )
+        await write_slot(DATE_SLOT_INDEX)
+        logger.info("{}日期区块更新完成：区块：{}", label, DATE_SLOT_INDEX)
 
     async def update_home(self, parent, blocks):
         """只更新受管理的六个区块，并在最后写入日期。

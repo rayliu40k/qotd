@@ -6,6 +6,7 @@ from uuid import UUID
 
 import httpx
 import pytest
+from loguru import logger
 
 from qotd.models import PublicationError, Quote
 from qotd.notion import Notion, UncertainCreate
@@ -151,7 +152,8 @@ def test_home_updates_only_owned_blocks_and_date_last():
 
     invoke(api(handler), "update_home", "owned", rows)
     assert len(writes) == 6
-    assert [p for p, _ in writes] == [f"/v1/blocks/slot{i}" for i in (1, 2, 3, 4, 5, 0)]
+    assert {p for p, _ in writes[:5]} == {f"/v1/blocks/slot{i}" for i in (1, 2, 3, 4, 5)}
+    assert writes[-1][0] == "/v1/blocks/slot0"
 
 
 def test_existing_daily_record_updates_properties_and_all_blocks():
@@ -167,7 +169,91 @@ def test_existing_daily_record_updates_properties_and_all_blocks():
     properties = {"轮次": {"number": 2}, "发布状态": {"select": {"name": "待发布"}}}
     invoke(api(handler), "update_record", "record", properties, rows)
     assert writes[0] == ("/v1/pages/record", {"properties": properties})
-    assert [path for path, _ in writes[1:]] == [f"/v1/blocks/slot{i}" for i in (1, 2, 3, 4, 5, 0)]
+    assert {path for path, _ in writes[1:6]} == {f"/v1/blocks/slot{i}" for i in (1, 2, 3, 4, 5)}
+    assert writes[-1][0] == "/v1/blocks/slot0"
+
+
+@pytest.mark.parametrize("method", ["update_home", "update_record"])
+def test_five_content_blocks_overlap_and_date_waits(method):
+    """五个内容请求须同时到达，日期区块须等待全部内容请求完成。"""
+    rows = children()
+    started = set()
+    finished = set()
+    all_started = asyncio.Event()
+    writes = []
+    events = []
+
+    async def handler(request):
+        if request.method == "GET":
+            return httpx.Response(200, json={"results": rows, "has_more": False})
+        path = request.url.path
+        writes.append(path)
+        if path == "/v1/pages/record":
+            assert method == "update_record"
+            assert not started
+        elif path == "/v1/blocks/slot0":
+            assert finished == {1, 2, 3, 4, 5}
+        else:
+            index = int(path.rsplit("slot", 1)[1])
+            started.add(index)
+            if len(started) == 5:
+                all_started.set()
+            await asyncio.wait_for(all_started.wait(), timeout=2)
+            finished.add(index)
+        return httpx.Response(200, json={})
+
+    args = ("owned", rows) if method == "update_home" else ("record", {}, rows)
+    sink = logger.add(lambda message: events.append(str(message)))
+    try:
+        invoke(api(handler), method, *args)
+    finally:
+        logger.remove(sink)
+    assert started == finished == {1, 2, 3, 4, 5}
+    assert writes[-1] == "/v1/blocks/slot0"
+    assert any("开始并发更新" in event and "数量：5" in event for event in events)
+    assert any("内容区块并发更新完成：成功：5" in event for event in events)
+    assert any("日期区块更新完成" in event for event in events)
+
+
+@pytest.mark.parametrize("method", ["update_home", "update_record"])
+def test_content_failure_waits_for_peers_and_skips_date(method):
+    """一个内容区块失败后，须收齐同批结果且不得写日期区块。"""
+    rows = children()
+    started = set()
+    finished = set()
+    all_started = asyncio.Event()
+    writes = []
+    events = []
+
+    async def handler(request):
+        if request.method == "GET":
+            return httpx.Response(200, json={"results": rows, "has_more": False})
+        path = request.url.path
+        writes.append(path)
+        if path == "/v1/pages/record":
+            return httpx.Response(200, json={})
+        index = int(path.rsplit("slot", 1)[1])
+        assert index != 0
+        started.add(index)
+        if len(started) == 5:
+            all_started.set()
+        await asyncio.wait_for(all_started.wait(), timeout=2)
+        if index == 5:
+            await asyncio.sleep(0.01)
+        finished.add(index)
+        return httpx.Response(403 if index == 3 else 200, json={})
+
+    args = ("owned", rows) if method == "update_home" else ("record", {}, rows)
+    sink = logger.add(lambda message: events.append(str(message)))
+    try:
+        with pytest.raises(PublicationError, match="区块 3"):
+            invoke(api(handler), method, *args)
+    finally:
+        logger.remove(sink)
+    assert started == finished == {1, 2, 3, 4, 5}
+    assert "/v1/blocks/slot0" not in writes
+    assert any("内容区块并发更新失败：成功：4，失败区块：[3]" in event for event in events)
+    assert not any("日期区块更新完成" in event for event in events)
 
 
 def test_changed_daily_record_layout_stops_before_property_update():
