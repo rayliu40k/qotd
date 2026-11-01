@@ -33,7 +33,7 @@ class UncertainCreate(PublicationError):
 
 
 class WriteConflict(PublicationError):
-    """表示 Notion 返回 409，允许在同批并发写入结束后逐个重试。"""
+    """表示 Notion 返回 409，允许对当前区块有限重试。"""
 
 
 class Notion:
@@ -212,7 +212,7 @@ class Notion:
         """原地覆盖当天记录的属性和六个正文块，保留页面 ID。
 
         先确认旧正文没有被用户改成其他结构，再保存新快照和待发布状态；
-        正文内容区块并发更新，全部成功后才更新日期。中途失败由下次运行
+        正文内容区块顺序更新，全部成功后才更新日期。中途失败由下次运行
         重新抽取并覆盖。
         """
         rows = await self.slots(id_, "每日记录")
@@ -223,11 +223,7 @@ class Notion:
         await self._write_slots(rows, blocks, "每日记录")
 
     async def _write_slots(self, rows, blocks, label):
-        """并发更新五个内容区块，收齐结果后最后更新日期区块。
-
-        同一页面的区块并发写入可能触发 Notion 409 冲突；只把冲突区块
-        在同批请求结束后逐个重试。其他失败仍阻止日期和后续发布步骤。
-        """
+        """顺序更新同一页面的六个区块，并保留有限的 409 冲突重试。"""
 
         async def write_slot(i):
             """把单个已验证区块的内容写入对应的 Notion 区块。"""
@@ -240,11 +236,11 @@ class Notion:
             )
 
         async def retry_conflicted_slot(i):
-            """带有限退避地重试一个冲突区块，避免再次并发碰撞。"""
+            """带有限退避地重试当前区块，处理外部写入造成的冲突。"""
             for retry in range(1, NOTION_MAX_ATTEMPTS):
                 delay = NOTION_CONFLICT_RETRY_BASE_SECONDS * 2 ** (retry - 1)
                 logger.warning(
-                    "{}区块 {} 写入冲突，{:.2f} 秒后逐个重试：第 {} 次",
+                    "{}区块 {} 写入冲突，{:.2f} 秒后重试：第 {} 次",
                     label,
                     i,
                     delay,
@@ -261,56 +257,40 @@ class Notion:
                     logger.info("{}区块 {} 写入冲突已恢复：重试次数：{}", label, i, retry)
                     return
 
+        async def write_with_conflict_retry(i):
+            """写入一个区块；遇到 409 时仅重试这一个区块。"""
+            try:
+                await write_slot(i)
+            except WriteConflict:
+                await retry_conflicted_slot(i)
+
         start = perf_counter()
         logger.info(
-            "开始并发更新{}内容区块：数量：{}，区块：{}",
+            "开始顺序更新{}区块：顺序：{}，日期最后",
             label,
-            len(CONTENT_SLOT_INDICES),
-            CONTENT_SLOT_INDICES,
+            (*CONTENT_SLOT_INDICES, DATE_SLOT_INDEX),
         )
-        results = await asyncio.gather(
-            *(write_slot(i) for i in CONTENT_SLOT_INDICES), return_exceptions=True
-        )
-        failures = [
-            (i, result)
-            for i, result in zip(CONTENT_SLOT_INDICES, results, strict=True)
-            if isinstance(result, BaseException)
-        ]
-        elapsed_ms = (perf_counter() - start) * 1000
-        non_conflicts = [
-            (i, error) for i, error in failures if not isinstance(error, WriteConflict)
-        ]
-        if non_conflicts:
-            logger.error(
-                "{}内容区块并发更新失败：成功：{}，失败区块：{}，耗时：{:.2f} ms",
-                label,
-                len(CONTENT_SLOT_INDICES) - len(failures),
-                [i for i, _ in failures],
-                elapsed_ms,
-            )
-            raise non_conflicts[0][1]
-        if failures:
-            logger.warning(
-                "{}内容区块并发写入冲突：成功：{}，冲突区块：{}，耗时：{:.2f} ms；开始逐个重试",
-                label,
-                len(CONTENT_SLOT_INDICES) - len(failures),
-                [i for i, _ in failures],
-                elapsed_ms,
-            )
-            # 不重发已成功的区块；冲突区块逐个写入，全部恢复后才能写日期。
-            for i, _ in failures:
-                await retry_conflicted_slot(i)
+        # 同一页面不再同时发起写入；某块失败立即停止，避免写入日期与后续发布状态。
+        for position, i in enumerate(CONTENT_SLOT_INDICES):
+            try:
+                await write_with_conflict_retry(i)
+            except PublicationError:
+                logger.error(
+                    "{}区块顺序更新失败：成功：{}，失败区块：{}，耗时：{:.2f} ms",
+                    label,
+                    position,
+                    i,
+                    (perf_counter() - start) * 1000,
+                )
+                raise
         logger.info(
-            "{}内容区块并发更新完成：成功：{}，耗时：{:.2f} ms；开始更新日期区块 {}",
+            "{}内容区块顺序更新完成：成功：{}，耗时：{:.2f} ms；开始更新日期区块 {}",
             label,
             len(CONTENT_SLOT_INDICES),
             (perf_counter() - start) * 1000,
             DATE_SLOT_INDEX,
         )
-        try:
-            await write_slot(DATE_SLOT_INDEX)
-        except WriteConflict:
-            await retry_conflicted_slot(DATE_SLOT_INDEX)
+        await write_with_conflict_retry(DATE_SLOT_INDEX)
         logger.info("{}日期区块更新完成：区块：{}", label, DATE_SLOT_INDEX)
 
     async def update_home(self, parent, blocks):

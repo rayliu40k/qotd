@@ -17,7 +17,7 @@ from .settings import (
 )
 
 SLOT_TYPES = ("heading_1", "quote", "paragraph", "paragraph", "paragraph", "paragraph")
-# 内容区块可并发写入；日期在所有内容写入成功后单独更新。
+# 同一页面的内容区块顺序写入；日期在所有内容写入成功后单独更新。
 CONTENT_SLOT_INDICES = (1, 2, 3, 4, 5)
 DATE_SLOT_INDEX = 0
 
