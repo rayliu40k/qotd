@@ -172,6 +172,23 @@
         "2026-11-01：模拟发布验证只读取所选书籍；./docs/init.sh 为 72 passed，Ruff 检查及格式检查通过。"
       ],
       "notes": "未运行真实 Notion 发布；线上性能将在下一次正常发布后由分阶段日志确认。"
+    },
+    {
+      "id": "total-publication-timing",
+      "date": "2026-11-01 17:19:59",
+      "priority": 1,
+      "area": "observability",
+      "title": "记录每日发布总耗时",
+      "user_visible_behavior": "每日发布命令成功或失败退出时，在控制台和每日日志文件记录从参数解析完成到退出的总耗时。",
+      "status": "passing",
+      "verification": [
+        "模拟成功发布和配置失败，检查总耗时日志。",
+        "运行 ./docs/init.sh，确认离线测试、Ruff 检查和格式检查通过。"
+      ],
+      "evidence": [
+        "2026-11-01：tests/test_cli.py 检查成功路径和配置失败路径的总耗时日志；./docs/init.sh 为 72 passed，Ruff 检查及格式检查通过。"
+      ],
+      "notes": "未运行会覆盖真实 Notion 当天记录的发布命令；实际线上总耗时待下次正常发布观察。"
     }
   ]
 }

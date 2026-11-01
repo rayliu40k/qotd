@@ -96,6 +96,7 @@ def test_cli_reports_success_through_logger_without_print(monkeypatch, capsys):
         assert cli.main() == 0
         assert capsys.readouterr().out == ""
         assert any("发布成功" in event and "测试金句" in event for event in events)
+        assert any("发布总耗时：" in event and " ms" in event for event in events)
     finally:
         logger.remove(sink)
 
@@ -117,6 +118,7 @@ def test_missing_config_directory_logs_error_to_current_project(monkeypatch, tmp
         content = log_file.read_text()
         assert "配置目录无法写入日志" in content
         assert "ERROR" in content and "无法读取配置" in content
+        assert "发布总耗时：" in content
         assert "无法读取配置" in capsys.readouterr().err
     finally:
         logger.remove()

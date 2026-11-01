@@ -13,6 +13,7 @@ import tomllib
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from time import perf_counter
 
 from dotenv import load_dotenv
 from loguru import logger
@@ -112,6 +113,7 @@ def main():
     daily = commands.add_parser("daily", help="发布北京时间当天的金句")
     daily.add_argument("--config", type=Path, default=Path("qotd.toml"))
     args = parser.parse_args()
+    started_at = perf_counter()
     try:
         path = args.config.resolve()
         try:
@@ -146,6 +148,9 @@ def main():
         # 意外异常只记录类型，避免 SDK 异常携带请求头或密钥进入日志。
         logger.error("发布遇到未预期异常：类型：{}", type(error).__name__)
         return 1
+    finally:
+        # 从参数解析完成到命令退出统一计时，成功或失败均记录总耗时。
+        logger.info("发布总耗时：{:.2f} ms", (perf_counter() - started_at) * 1000)
 
 
 if __name__ == "__main__":
