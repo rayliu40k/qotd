@@ -1,5 +1,6 @@
 import asyncio
 import json
+from collections import Counter
 from datetime import date
 from types import SimpleNamespace
 from uuid import UUID
@@ -254,6 +255,80 @@ def test_content_failure_waits_for_peers_and_skips_date(method):
     assert "/v1/blocks/slot0" not in writes
     assert any("内容区块并发更新失败：成功：4，失败区块：[3]" in event for event in events)
     assert not any("日期区块更新完成" in event for event in events)
+
+
+@pytest.mark.parametrize("method", ["update_home", "update_record"])
+def test_conflicted_content_blocks_retry_one_by_one_before_date(method):
+    """同页并发写入遇到 409 时，只逐个重试冲突区块。"""
+    rows = children()
+    attempts = Counter()
+    first_wave = set()
+    all_started = asyncio.Event()
+    writes = []
+    events = []
+    active_retry = False
+
+    async def no_sleep(_delay):
+        """跳过测试中的退避等待。"""
+
+    async def handler(request):
+        nonlocal active_retry
+        if request.method == "GET":
+            return httpx.Response(200, json={"results": rows, "has_more": False})
+        path = request.url.path
+        writes.append(path)
+        if path == "/v1/pages/record":
+            assert not first_wave
+            return httpx.Response(200, json={})
+        index = int(path.rsplit("slot", 1)[1])
+        attempts[index] += 1
+        if index == 0:
+            assert all(attempts[i] == (2 if i in (2, 3, 5) else 1) for i in range(1, 6))
+            return httpx.Response(200, json={})
+        if attempts[index] == 1:
+            first_wave.add(index)
+            if len(first_wave) == 5:
+                all_started.set()
+            await asyncio.wait_for(all_started.wait(), timeout=2)
+            return httpx.Response(409 if index in (2, 3, 5) else 200, json={})
+        assert not active_retry
+        active_retry = True
+        await asyncio.sleep(0)
+        active_retry = False
+        return httpx.Response(200, json={})
+
+    args = ("owned", rows) if method == "update_home" else ("record", {}, rows)
+    sink = logger.add(lambda message: events.append(str(message)))
+    try:
+        invoke(api(handler, sleep=no_sleep), method, *args)
+    finally:
+        logger.remove(sink)
+    assert writes[-1] == "/v1/blocks/slot0"
+    assert attempts == Counter({2: 2, 3: 2, 5: 2, 1: 1, 4: 1, 0: 1})
+    assert any("冲突区块：[2, 3, 5]" in event for event in events)
+    assert any("内容区块并发更新完成：成功：5" in event for event in events)
+
+
+def test_persistent_conflict_stops_before_date():
+    """同一内容区块持续冲突时，有限重试后停止发布。"""
+    rows = children()
+    attempts = Counter()
+
+    async def no_sleep(_delay):
+        """跳过测试中的退避等待。"""
+
+    def handler(request):
+        if request.method == "GET":
+            return httpx.Response(200, json={"results": rows, "has_more": False})
+        index = int(request.url.path.rsplit("slot", 1)[1])
+        assert index != 0
+        attempts[index] += 1
+        return httpx.Response(409 if index == 3 else 200, json={})
+
+    with pytest.raises(PublicationError, match="写入冲突"):
+        invoke(api(handler, sleep=no_sleep), "update_home", "owned", rows)
+    assert attempts[3] == 5
+    assert all(attempts[i] == 1 for i in (1, 2, 4, 5))
 
 
 def test_changed_daily_record_layout_stops_before_property_update():

@@ -21,6 +21,7 @@ from .models import PublicationError, canonical_id
 from .render import CONTENT_SLOT_INDICES, DATE_SLOT_INDEX, SLOT_TYPES
 from .settings import (
     DAILY_STATUS,
+    NOTION_CONFLICT_RETRY_BASE_SECONDS,
     NOTION_MAX_ATTEMPTS,
     NOTION_PAGE_SIZE,
     NOTION_TIMEOUT_MS,
@@ -29,6 +30,10 @@ from .settings import (
 
 class UncertainCreate(PublicationError):
     """表示每日记录可能已创建，需要先查询而不能直接重发。"""
+
+
+class WriteConflict(PublicationError):
+    """表示 Notion 返回 409，允许在同批并发写入结束后逐个重试。"""
 
 
 class Notion:
@@ -84,6 +89,8 @@ class Notion:
                         delay = 2**attempt
                     await self.sleep(min(60, max(0, delay)))
                     continue
+                if status == 409 and not create:
+                    raise WriteConflict(f"Notion {label}发生写入冲突（HTTP 409）。") from error
                 if create and status >= 500:
                     # 服务端可能已经写入；上层只能按日期查询，不能重发创建请求。
                     raise UncertainCreate("创建结果不确定，正在核对 Notion。") from error
@@ -218,8 +225,8 @@ class Notion:
     async def _write_slots(self, rows, blocks, label):
         """并发更新五个内容区块，收齐结果后最后更新日期区块。
 
-        各内容区块使用独立 ID，可以同时写入。若其中一个请求最终失败，
-        先等待其余请求结束，再抛出错误；日期和后续发布步骤不会执行。
+        同一页面的区块并发写入可能触发 Notion 409 冲突；只把冲突区块
+        在同批请求结束后逐个重试。其他失败仍阻止日期和后续发布步骤。
         """
 
         async def write_slot(i):
@@ -231,6 +238,28 @@ class Notion:
                 ),
                 f"更新{label}区块 {i}",
             )
+
+        async def retry_conflicted_slot(i):
+            """带有限退避地重试一个冲突区块，避免再次并发碰撞。"""
+            for retry in range(1, NOTION_MAX_ATTEMPTS):
+                delay = NOTION_CONFLICT_RETRY_BASE_SECONDS * 2 ** (retry - 1)
+                logger.warning(
+                    "{}区块 {} 写入冲突，{:.2f} 秒后逐个重试：第 {} 次",
+                    label,
+                    i,
+                    delay,
+                    retry,
+                )
+                await self.sleep(delay)
+                try:
+                    await write_slot(i)
+                except WriteConflict:
+                    if retry == NOTION_MAX_ATTEMPTS - 1:
+                        logger.error("{}区块 {} 写入冲突重试已用尽", label, i)
+                        raise
+                else:
+                    logger.info("{}区块 {} 写入冲突已恢复：重试次数：{}", label, i, retry)
+                    return
 
         start = perf_counter()
         logger.info(
@@ -248,7 +277,10 @@ class Notion:
             if isinstance(result, BaseException)
         ]
         elapsed_ms = (perf_counter() - start) * 1000
-        if failures:
+        non_conflicts = [
+            (i, error) for i, error in failures if not isinstance(error, WriteConflict)
+        ]
+        if non_conflicts:
             logger.error(
                 "{}内容区块并发更新失败：成功：{}，失败区块：{}，耗时：{:.2f} ms",
                 label,
@@ -256,15 +288,29 @@ class Notion:
                 [i for i, _ in failures],
                 elapsed_ms,
             )
-            raise failures[0][1]
+            raise non_conflicts[0][1]
+        if failures:
+            logger.warning(
+                "{}内容区块并发写入冲突：成功：{}，冲突区块：{}，耗时：{:.2f} ms；开始逐个重试",
+                label,
+                len(CONTENT_SLOT_INDICES) - len(failures),
+                [i for i, _ in failures],
+                elapsed_ms,
+            )
+            # 不重发已成功的区块；冲突区块逐个写入，全部恢复后才能写日期。
+            for i, _ in failures:
+                await retry_conflicted_slot(i)
         logger.info(
             "{}内容区块并发更新完成：成功：{}，耗时：{:.2f} ms；开始更新日期区块 {}",
             label,
             len(CONTENT_SLOT_INDICES),
-            elapsed_ms,
+            (perf_counter() - start) * 1000,
             DATE_SLOT_INDEX,
         )
-        await write_slot(DATE_SLOT_INDEX)
+        try:
+            await write_slot(DATE_SLOT_INDEX)
+        except WriteConflict:
+            await retry_conflicted_slot(DATE_SLOT_INDEX)
         logger.info("{}日期区块更新完成：区块：{}", label, DATE_SLOT_INDEX)
 
     async def update_home(self, parent, blocks):
