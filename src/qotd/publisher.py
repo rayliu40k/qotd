@@ -9,11 +9,19 @@ from datetime import date, datetime
 
 from loguru import logger
 
-from .models import PublicationError, Quote, choose_quote, prop_text, relation_id, rich_text
+from .models import (
+    PublicationError,
+    Quote,
+    QuoteCandidate,
+    canonical_id,
+    choose_quote,
+    prop_text,
+    relation_id,
+    rich_text,
+)
 from .notion import UncertainCreate
 from .render import render
 from .settings import (
-    BOOK_READ_WORKERS,
     CREATE_RECOVERY_DELAYS,
     DAILY_DATE,
     DAILY_QUOTE,
@@ -60,40 +68,19 @@ def record_properties(day, quote, round_, pending_status=PENDING_STATUS):
     }
 
 
-async def read_quotes(api, rows, page_url_template):
-    """校验候选金句关联，并发读取不同书籍后组装完整候选项。
-
-    已归档或进入垃圾箱的金句不会参加轮换；同一本书仅查询一次。
-    保留全部候选项的原有校验，避免选中有效金句时掩盖其他错误数据。
-    """
-    active_rows = [row for row in rows if not row.get("archived") and not row.get("in_trash")]
-    book_ids = list(dict.fromkeys(relation_id(row, QUOTE_BOOK) for row in active_rows))
-    if not book_ids:
-        return []
-    # 关联 ID 已全部核验，下面只并发读取不同书籍；共享 API 客户端用于连接复用。
-    start = time.perf_counter()
-    semaphore = asyncio.Semaphore(BOOK_READ_WORKERS)
-
-    async def load_book(id_):
-        """限制同时读取的书籍数量，避免一次请求全部书籍。"""
-        async with semaphore:
-            return await api.page(id_)
-
-    # 等待所有书籍请求结束后再传播错误，避免关闭客户端时仍有请求在后台运行。
-    book_pages = await asyncio.gather(*(load_book(id_) for id_ in book_ids), return_exceptions=True)
-    for page in book_pages:
-        if isinstance(page, BaseException):
-            raise page
-    books = dict(zip(book_ids, book_pages, strict=True))
-    logger.info(
-        "Notion 查询关联书籍耗时：{:.2f} ms，书籍：{} 本",
-        (time.perf_counter() - start) * 1000,
-        len(books),
-    )
-    return [
-        Quote.from_page(row, books[relation_id(row, QUOTE_BOOK)], page_url_template)
-        for row in active_rows
-    ]
+def prepare_candidates(rows):
+    """在内存中筛除已归档金句，并校验每条候选的 ID 与书籍关联。"""
+    candidates = []
+    skipped = 0
+    for row in rows:
+        if row.get("archived") or row.get("in_trash"):
+            skipped += 1
+            continue
+        candidates.append(
+            QuoteCandidate(canonical_id(row.get("id")), relation_id(row, QUOTE_BOOK), row)
+        )
+    logger.info("候选金句校验完成：可用 {} 条，跳过归档 {} 条", len(candidates), skipped)
+    return candidates
 
 
 async def publish(api, config, *, now=None, sleep=asyncio.sleep):
@@ -127,7 +114,7 @@ async def publish(api, config, *, now=None, sleep=asyncio.sleep):
         return rows
 
     async def load_quotes():
-        """分页读取可轮换金句，并异步读取其关联书籍。"""
+        """分页读取可轮换金句，仅在内存中准备抽选所需信息。"""
         start = time.perf_counter()
         quote_rows = await api.query(
             config.quotes_data_source_id,
@@ -139,9 +126,9 @@ async def publish(api, config, *, now=None, sleep=asyncio.sleep):
             len(quote_rows),
         )
         start = time.perf_counter()
-        quotes = await read_quotes(api, quote_rows, config.page_url_template)
+        quotes = prepare_candidates(quote_rows)
         logger.info(
-            "整理金句和关联书籍耗时：{:.2f} ms，可用：{} 条",
+            "准备抽选候选耗时：{:.2f} ms，可用：{} 条",
             (time.perf_counter() - start) * 1000,
             len(quotes),
         )
@@ -199,8 +186,29 @@ async def publish(api, config, *, now=None, sleep=asyncio.sleep):
         (time.perf_counter() - start) * 1000,
         len(history),
     )
-    quote, round_ = choose_quote(quotes, history)
-    logger.info("选中金句：{}，轮次：{}，候选数：{}", quote.id, round_, len(quotes))
+    selected, round_ = choose_quote(quotes, history)
+    logger.info(
+        "选中金句 ID：{}，关联书籍 ID：{}，轮次：{}，候选数：{}",
+        selected.id,
+        selected.book_id,
+        round_,
+        len(quotes),
+    )
+    # 分页结果已包含金句全部属性；只为最终选中的这一条读取关联书籍。
+    start = time.perf_counter()
+    book = await api.page(selected.book_id)
+    logger.info(
+        "Notion 查询所选书籍耗时：{:.2f} ms，书籍 ID：{}",
+        (time.perf_counter() - start) * 1000,
+        selected.book_id,
+    )
+    start = time.perf_counter()
+    quote = Quote.from_page(selected.row, book, config.page_url_template)
+    logger.info(
+        "组装所选金句展示数据耗时：{:.2f} ms，金句 ID：{}",
+        (time.perf_counter() - start) * 1000,
+        quote.id,
+    )
     # 写入前构造全部负载；新建包含正文，覆盖则先更新快照再更新正文。
     blocks = render(quote, day)
     properties = record_properties(day, quote, round_, config.pending_status)

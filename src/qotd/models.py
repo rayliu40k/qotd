@@ -102,7 +102,7 @@ class Quote:
     def from_page(cls, page: dict, book: dict, page_url_template: str) -> "Quote":
         """从金句页和关联书籍页读取展示数据。
 
-        书籍没有返回 URL 时，使用配置的模板生成链接；原文标黄范围
+        书籍没有返回 URL 时，使用配置的模板生成链接；原文灰底范围
         会转成字符偏移保存于 ``context_highlights``。
         """
         text = prop_text(page, QUOTE_TITLE)
@@ -154,9 +154,20 @@ class Quote:
             raise PublicationError("当天展示快照无效，已停止本次发布，不会覆盖旧记录。") from error
 
 
+@dataclass(frozen=True)
+class QuoteCandidate:
+    """保存抽选所需的金句 ID、书籍 ID 和已查询到的原始记录。"""
+
+    id: str
+    book_id: str
+    row: dict
+
+
 def choose_quote(
-    quotes: list[Quote], history: list[tuple[str, int]], rng: random.Random | None = None
-) -> tuple[Quote, int]:
+    quotes: list[Quote | QuoteCandidate],
+    history: list[tuple[str, int]],
+    rng: random.Random | None = None,
+) -> tuple[Quote | QuoteCandidate, int]:
     """从当前轮尚未使用的金句中随机选择并返回轮次。
 
     当前轮全部展示后才进入下一轮；新增金句可加入当前轮。``rng``

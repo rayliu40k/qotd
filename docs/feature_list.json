@@ -1,6 +1,6 @@
 {
   "project": "每日金句（qotd）",
-  "last_updated": "2026-10-23",
+  "last_updated": "2026-11-01",
   "rules": {
     "single_active_feature": true,
     "passing_requires_evidence": true,
@@ -155,6 +155,23 @@
         "2026-10-23：用户 11:39 的实际发布日志记录首页六区块更新并标记发布；只读获取 Notion 首页与当日唯一每日记录，两处均为新金句“股市短期波动靠心理，中期波动靠利率，长期走势靠基本面。”，首页编辑时间为北京时间 11:39:42。浏览器截图仍是旧内容，刷新后的画面未验证；本轮未触发发布。"
       ],
       "notes": "离线模拟已验证发布行为；2026-10-23 通过已连接 Notion 只读确认用户实际发布结果，浏览器刷新后的显示尚未验证。"
+    },
+    {
+      "id": "select-before-book-read",
+      "date": "2026-11-01 16:58:18",
+      "priority": 1,
+      "area": "publication",
+      "title": "先抽金句再读取所选书籍",
+      "user_visible_behavior": "每日发布保持轮换与同日覆盖；每次只查询抽中金句关联的一本书。",
+      "status": "passing",
+      "verification": [
+        "模拟多本书候选，确认只请求所选书籍并保留抽选和展示结果。",
+        "运行 ./docs/init.sh，核对 pytest、Ruff 检查与格式检查。"
+      ],
+      "evidence": [
+        "2026-11-01：模拟发布验证只读取所选书籍；./docs/init.sh 为 72 passed，Ruff 检查及格式检查通过。"
+      ],
+      "notes": "未运行真实 Notion 发布；线上性能将在下一次正常发布后由分阶段日志确认。"
     }
   ]
 }

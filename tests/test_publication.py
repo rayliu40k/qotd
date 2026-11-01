@@ -13,7 +13,7 @@ from qotd.cli import Config
 from qotd.logging_setup import configure_logging
 from qotd.models import PublicationError, Quote, choose_quote, plain, rich_text
 from qotd.notion import UncertainCreate
-from qotd.publisher import publish, read_quotes, record_properties
+from qotd.publisher import prepare_candidates, publish, record_properties
 from qotd.render import SLOT_TYPES, render
 
 
@@ -50,6 +50,17 @@ def make_quote(number):
         f"读书讲解稿 · 第1节第{number}段",
         f"https://www.notion.so/source#paragraph{number}",
     )
+
+
+def scripted_choice(choices):
+    """按预设 ID 从本次实际候选中取值，模拟连续重发的随机结果。"""
+    iterator = iter(choices)
+
+    def choose(candidates, _history):
+        wanted = next(iterator).id
+        return next(candidate for candidate in candidates if candidate.id == wanted), 1
+
+    return choose
 
 
 def page(quote):
@@ -161,8 +172,9 @@ def test_publication_timing_is_written_to_daily_log(tmp_path):
         for label in (
             "Notion 发布前核验耗时",
             "Notion 查询可轮换金句耗时",
-            "整理金句和关联书籍耗时",
-            "Notion 查询关联书籍耗时",
+            "准备抽选候选耗时",
+            "Notion 查询所选书籍耗时",
+            "组装所选金句展示数据耗时",
             "Notion 查询每日记录耗时",
             "核对轮换历史耗时",
             "筛选",
@@ -231,8 +243,9 @@ def test_custom_home_url_flows_through_publication():
 
 def test_same_day_overwrites_one_record_and_home(monkeypatch):
     api = FakeNotion()
-    choices = iter([make_quote(1), make_quote(2)])
-    monkeypatch.setattr("qotd.publisher.choose_quote", lambda _quotes, _history: (next(choices), 1))
+    monkeypatch.setattr(
+        "qotd.publisher.choose_quote", scripted_choice([make_quote(1), make_quote(2)])
+    )
     first = run_publish(api, CONFIG, now=NOW)
     second = run_publish(api, CONFIG, now=NOW)
     assert first["date"] == "2026-10-17"
@@ -249,8 +262,10 @@ def test_same_day_overwrites_one_record_and_home(monkeypatch):
 @pytest.mark.parametrize("failure", ["fail_record", "fail_home", "fail_status"])
 def test_partial_failure_next_run_reselects_and_overwrites(monkeypatch, failure):
     api = FakeNotion()
-    choices = iter([make_quote(1), make_quote(2), make_quote(3)])
-    monkeypatch.setattr("qotd.publisher.choose_quote", lambda _quotes, _history: (next(choices), 1))
+    monkeypatch.setattr(
+        "qotd.publisher.choose_quote",
+        scripted_choice([make_quote(1), make_quote(2), make_quote(3)]),
+    )
     run_publish(api, CONFIG, now=NOW)
     setattr(api, failure, True)
     with pytest.raises(PublicationError):
@@ -281,7 +296,8 @@ def test_only_final_same_day_quote_counts_in_next_round(monkeypatch):
 
     def choose(quotes, history):
         if not history:
-            return next(choices), 1
+            wanted = next(choices).id
+            return next(candidate for candidate in quotes if candidate.id == wanted), 1
         return original_choose(quotes, history)
 
     monkeypatch.setattr("qotd.publisher.choose_quote", choose)
@@ -373,30 +389,24 @@ def test_new_quote_joins_current_round_and_retired_quotes_do_not_block_next():
     assert (chosen.id, round_) == (id_(1), 2)
 
 
-def test_deleted_and_archived_quotes_skipped_book_relation_resolved_once():
+def test_deleted_and_archived_quotes_skipped_without_book_reads():
     api = FakeNotion()
     api.quotes[0]["archived"] = True
     api.quotes[1]["in_trash"] = True
-    quotes = asyncio.run(read_quotes(api, api.quotes, CONFIG.page_url_template))
+    quotes = prepare_candidates(api.quotes)
     assert len(quotes) == 6
-    assert api.book_reads == 1
-    assert quotes[0].book == "《测试书》"
-    assert quotes[0].book_url == "https://www.notion.so/book"
+    assert api.book_reads == 0
+    assert quotes[0].book_id == id_(200)
 
 
-def test_distinct_books_are_read_concurrently_and_reused():
+def test_only_selected_book_is_read(monkeypatch):
     api = FakeNotion()
     api.quotes = [page(make_quote(i)) for i in (1, 2, 3)]
     api.quotes[1]["properties"]["书籍"] = {"relation": [{"id": id_(201)}]}
-    arrived = asyncio.Event()
     calls = []
 
     async def read_book(book_id):
         calls.append(book_id)
-        if len(calls) == 2:
-            arrived.set()
-        # 串行读取会超时；两本书必须同时发起读取。
-        await asyncio.wait_for(arrived.wait(), timeout=2)
         return {
             "id": book_id,
             "url": f"https://www.notion.so/{book_id}",
@@ -404,35 +414,37 @@ def test_distinct_books_are_read_concurrently_and_reused():
         }
 
     api.page = read_book
-    quotes = asyncio.run(read_quotes(api, api.quotes, CONFIG.page_url_template))
-    assert [quote.id for quote in quotes] == [id_(1), id_(2), id_(3)]
-    assert len(calls) == 2
-    assert set(calls) == {id_(200), id_(201)}
-    assert [quote.book for quote in quotes] == [
-        f"《书 {id_(200)}》",
-        f"《书 {id_(201)}》",
-        f"《书 {id_(200)}》",
-    ]
+    monkeypatch.setattr(
+        "qotd.publisher.choose_quote",
+        lambda candidates, _history: (next(c for c in candidates if c.id == id_(2)), 1),
+    )
+    result = run_publish(api, CONFIG, now=NOW)
+    assert result["quote"] == "金句 2"
+    assert calls == [id_(201)]
+    assert (
+        api.records[0]["blocks"][1]["quote"]["rich_text"][-1]["text"]["content"]
+        == f"《书 {id_(201)}》"
+    )
 
 
-def test_book_read_failure_waits_for_other_requests_before_propagating():
-    """一个关联书籍读取失败时，其他并发读取先结束，发布不写入。"""
+def test_selected_book_read_failure_stops_before_write(monkeypatch):
+    """所选书籍读取失败时停止发布，其他书籍不被读取。"""
     api = FakeNotion()
     api.quotes[1]["properties"]["书籍"] = {"relation": [{"id": id_(201)}]}
-    finished = False
+    calls = []
 
     async def read_book(book_id):
-        nonlocal finished
-        if book_id == id_(200):
-            raise PublicationError("书籍读取失败")
-        await asyncio.sleep(0.01)
-        finished = True
-        return {"id": book_id}
+        calls.append(book_id)
+        raise PublicationError("书籍读取失败")
 
     api.page = read_book
+    monkeypatch.setattr(
+        "qotd.publisher.choose_quote",
+        lambda candidates, _history: (next(c for c in candidates if c.id == id_(2)), 1),
+    )
     with pytest.raises(PublicationError, match="书籍读取失败"):
         run_publish(api, CONFIG, now=NOW)
-    assert finished is True
+    assert calls == [id_(201)]
     assert api.creates == 0
     assert api.home is None
 
