@@ -6,7 +6,7 @@
 
 1. 用 `pwd` 确认位于 `/usr/local/codex-workspace/qotd`。
 2. 读取 `docs/progress.md`、`docs/feature_list.json` 和 `docs/session-handoff.md`，了解已验证状态、尚未完成的工作及上一轮交接；同时核对用户本轮的实际目标，不凭空启动清单外的功能。
-3. 运行 `git status --short`、`git log --oneline -5`，保留已有未提交改动。
+3. 运行 `git status --short`、`git log --oneline -5git log --oneline -5`，保留已有未提交改动。
 4. 根据本轮改动范围选择验证：涉及 Python、测试或可执行脚本时运行 `./docs/init.sh`；仅修改文档或配置时，检查相关文件即可，无需运行该脚本。验证失败时，先修复或记录明确的 blocker，再继续工作。
 5. 修改真实 Notion 内容前，读取 `qotd.toml`；初始化书籍时还要读取 `initialize-daily-quote-book` skill，并核对现有页面与记录。
 
@@ -19,6 +19,7 @@
 | 开工、查询当前状态 | `docs/progress.md` | 已验证状态与按北京时间升序排列的会话记录，新记录在底部 |
 | 开工、选择或更新功能 | `docs/feature_list.json` | 功能状态、验证要求与证据；以 `date` 升序排列，新功能在底部 |
 | 开工、接续上一轮工作 | `docs/session-handoff.md` | 最近一轮的简短交接摘要 |
+| 新增或修改代码、审查代码 | `docs/code-standards.md` | 中文注释、PEP 257 文档字符串和 Loguru 日志规范 |
 | 涉及代码或脚本时验证 | `docs/init.sh` | 从项目根目录运行的离线环境与测试入口：`./docs/init.sh` |
 | 收尾、提交前 | `docs/clean-state-checklist.md` | 逐项核对验证、记录、差异及可交接状态 |
 
