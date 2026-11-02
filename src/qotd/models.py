@@ -156,11 +156,10 @@ class Quote:
 
 @dataclass(frozen=True)
 class QuoteCandidate:
-    """保存抽选所需的金句 ID、书籍 ID 和已查询到的原始记录。"""
+    """只保存抽选所需的金句 ID 与关联书籍 ID。"""
 
     id: str
     book_id: str
-    row: dict
 
 
 def choose_quote(

@@ -76,9 +76,7 @@ def prepare_candidates(rows):
         if row.get("archived") or row.get("in_trash"):
             skipped += 1
             continue
-        candidates.append(
-            QuoteCandidate(canonical_id(row.get("id")), relation_id(row, QUOTE_BOOK), row)
-        )
+        candidates.append(QuoteCandidate(canonical_id(row.get("id")), relation_id(row, QUOTE_BOOK)))
     logger.info("候选金句校验完成：可用 {} 条，跳过归档 {} 条", len(candidates), skipped)
     return candidates
 
@@ -116,9 +114,11 @@ async def publish(api, config, *, now=None, sleep=asyncio.sleep):
     async def load_quotes():
         """分页读取可轮换金句，仅在内存中准备抽选所需信息。"""
         start = time.perf_counter()
+        logger.info("开始查询可轮换金句：只返回抽选所需属性 {}", [QUOTE_BOOK])
         quote_rows = await api.query(
             config.quotes_data_source_id,
             {"property": QUOTE_ENABLED, "checkbox": {"equals": True}},
+            filter_properties=[QUOTE_BOOK],
         )
         logger.info(
             "Notion 查询可轮换金句耗时：{:.2f} ms，返回：{} 条",
@@ -194,16 +194,32 @@ async def publish(api, config, *, now=None, sleep=asyncio.sleep):
         round_,
         len(quotes),
     )
-    # 分页结果已包含金句全部属性；只为最终选中的这一条读取关联书籍。
+    # 分页结果只用于抽选；并发读取所选金句的完整属性及其关联书籍。
     start = time.perf_counter()
-    book = await api.page(selected.book_id)
+    selected_page, book = await asyncio.gather(
+        api.page(selected.id), api.page(selected.book_id), return_exceptions=True
+    )
+    for result in (selected_page, book):
+        if isinstance(result, BaseException):
+            raise result
     logger.info(
-        "Notion 查询所选书籍耗时：{:.2f} ms，书籍 ID：{}",
+        "Notion 查询所选金句及书籍耗时：{:.2f} ms，金句 ID：{}，书籍 ID：{}",
         (time.perf_counter() - start) * 1000,
+        selected.id,
         selected.book_id,
     )
+    # 抽选后金句可能被编辑；写入前确认它仍启用且仍属于同一本书。
+    if (
+        canonical_id(selected_page.get("id")) != selected.id
+        or selected_page.get("archived")
+        or selected_page.get("in_trash")
+        or selected_page.get("properties", {}).get(QUOTE_ENABLED, {}).get("checkbox") is not True
+        or relation_id(selected_page, QUOTE_BOOK) != selected.book_id
+    ):
+        raise PublicationError("所选金句在查询后已变更，未写入；请重新运行。")
+    logger.info("所选金句状态与书籍关联已复核：金句 ID：{}", selected.id)
     start = time.perf_counter()
-    quote = Quote.from_page(selected.row, book, config.page_url_template)
+    quote = Quote.from_page(selected_page, book, config.page_url_template)
     logger.info(
         "组装所选金句展示数据耗时：{:.2f} ms，金句 ID：{}",
         (time.perf_counter() - start) * 1000,

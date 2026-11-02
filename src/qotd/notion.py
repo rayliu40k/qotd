@@ -114,14 +114,16 @@ class Notion:
                 await self.sleep(2**attempt)
         raise PublicationError(f"Notion {label}重试已用尽。")
 
-    async def query(self, source, filter_=None):
+    async def query(self, source, filter_=None, *, filter_properties=None):
         """分页查询一个数据源，并返回全部页面记录。
 
-        每一页都使用相同的 ``filter_``，直到 SDK 报告没有后续游标。
+        每一页都使用相同的过滤条件和属性投影，直到没有后续游标。
         """
         params = {"data_source_id": source, "page_size": NOTION_PAGE_SIZE}
         if filter_:
             params["filter"] = filter_
+        if filter_properties is not None:
+            params["filter_properties"] = filter_properties
         rows = []
         cursor = None
         page_number = 0
@@ -223,7 +225,21 @@ class Notion:
         await self._write_slots(rows, blocks, "每日记录")
 
     async def _write_slots(self, rows, blocks, label):
-        """顺序更新同一页面的六个区块，并保留有限的 409 冲突重试。"""
+        """顺序更新同一页面；跳过已确认相同的留白，并保留 409 重试。"""
+
+        def unchanged_spacer(i):
+            """只在留白的类型、空内容和颜色均已确认一致时跳过写入。"""
+            if i not in (2, 4):
+                return False
+            current = rows[i].get("paragraph", {})
+            target = blocks[i].get("paragraph", {})
+            return (
+                rows[i].get("type") == blocks[i].get("type") == "paragraph"
+                and current.get("rich_text") == target.get("rich_text") == []
+                and current.get("color") == target.get("color")
+                and "color" in current
+                and "color" in target
+            )
 
         async def write_slot(i):
             """把单个已验证区块的内容写入对应的 Notion 区块。"""
@@ -265,33 +281,48 @@ class Notion:
                 await retry_conflicted_slot(i)
 
         start = perf_counter()
+        written = []
+        skipped = []
         logger.info(
             "开始顺序更新{}区块：顺序：{}，日期最后",
             label,
             (*CONTENT_SLOT_INDICES, DATE_SLOT_INDEX),
         )
         # 同一页面不再同时发起写入；某块失败立即停止，避免写入日期与后续发布状态。
-        for position, i in enumerate(CONTENT_SLOT_INDICES):
+        for i in CONTENT_SLOT_INDICES:
+            if unchanged_spacer(i):
+                skipped.append(i)
+                logger.info("{}区块 {} 已是目标空白样式，跳过写入", label, i)
+                continue
             try:
                 await write_with_conflict_retry(i)
             except PublicationError:
                 logger.error(
-                    "{}区块顺序更新失败：成功：{}，失败区块：{}，耗时：{:.2f} ms",
+                    "{}区块顺序更新失败：已写：{}，已跳过：{}，失败区块：{}，耗时：{:.2f} ms",
                     label,
-                    position,
+                    written,
+                    skipped,
                     i,
                     (perf_counter() - start) * 1000,
                 )
                 raise
+            written.append(i)
         logger.info(
-            "{}内容区块顺序更新完成：成功：{}，耗时：{:.2f} ms；开始更新日期区块 {}",
+            "{}内容区块顺序更新完成：实际写入：{}，跳过：{}，耗时：{:.2f} ms；开始更新日期区块 {}",
             label,
-            len(CONTENT_SLOT_INDICES),
+            written,
+            skipped,
             (perf_counter() - start) * 1000,
             DATE_SLOT_INDEX,
         )
         await write_with_conflict_retry(DATE_SLOT_INDEX)
-        logger.info("{}日期区块更新完成：区块：{}", label, DATE_SLOT_INDEX)
+        logger.info(
+            "{}日期区块更新完成：区块：{}，本页实际写入：{} 次，跳过：{} 次",
+            label,
+            DATE_SLOT_INDEX,
+            len(written) + 1,
+            len(skipped),
+        )
 
     async def update_home(self, parent, blocks):
         """只更新受管理的六个区块，并在最后写入日期。

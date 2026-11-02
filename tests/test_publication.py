@@ -69,6 +69,7 @@ def page(quote):
         "properties": {
             "金句": {"title": rich_text(quote.text)},
             "书籍": {"relation": [{"id": id_(200)}]},
+            "参与轮换": {"checkbox": True},
             "原文": {"rich_text": rich_text(quote.context)},
             "原文位置": {"rich_text": rich_text(quote.source_label)},
             "原文链接": {"url": quote.source_url},
@@ -84,6 +85,8 @@ class FakeNotion:
         self.user_content = "用户写在发布区以外的内容"
         self.creates = 0
         self.book_reads = 0
+        self.quote_reads = 0
+        self.quote_query_properties = []
         self.daily_queries = 0
         self.daily_query_filters = []
         self.fail_home = False
@@ -95,10 +98,22 @@ class FakeNotion:
     async def preflight(self, config):
         pass
 
-    async def query(self, source, filter_=None):
+    async def query(self, source, filter_=None, *, filter_properties=None):
         if source == CONFIG.quotes_data_source_id:
             assert filter_ == {"property": "参与轮换", "checkbox": {"equals": True}}
-            return self.quotes
+            assert filter_properties == ["书籍"]
+            self.quote_query_properties.append(filter_properties)
+            # 模拟 Notion 的属性投影，分页候选不包含原文和标题。
+            return [
+                {
+                    "id": row["id"],
+                    "properties": {"书籍": row["properties"]["书籍"]},
+                    "archived": row.get("archived", False),
+                    "in_trash": row.get("in_trash", False),
+                }
+                for row in self.quotes
+                if row["properties"].get("参与轮换", {}).get("checkbox") is True
+            ]
         self.daily_queries += 1
         self.daily_query_filters.append(filter_)
         if filter_ is None:
@@ -115,6 +130,10 @@ class FakeNotion:
         ]
 
     async def page(self, id_):
+        for quote in self.quotes:
+            if quote["id"] == id_:
+                self.quote_reads += 1
+                return copy.deepcopy(quote)
         self.book_reads += 1
         return {
             "id": id_,
@@ -173,7 +192,7 @@ def test_publication_timing_is_written_to_daily_log(tmp_path):
             "Notion 发布前核验耗时",
             "Notion 查询可轮换金句耗时",
             "准备抽选候选耗时",
-            "Notion 查询所选书籍耗时",
+            "Notion 查询所选金句及书籍耗时",
             "组装所选金句展示数据耗时",
             "Notion 查询每日记录耗时",
             "核对轮换历史耗时",
@@ -207,12 +226,12 @@ def test_independent_reads_overlap_and_daily_records_are_queried_once_before_wri
         async def preflight(self, config):
             await self.gate("首页")
 
-        async def query(self, source, filter_=None):
+        async def query(self, source, filter_=None, *, filter_properties=None):
             if source == CONFIG.quotes_data_source_id:
                 await self.gate("金句")
             elif filter_ is None:
                 await self.gate("每日记录")
-            return await super().query(source, filter_)
+            return await super().query(source, filter_, filter_properties=filter_properties)
 
     api = GatedNotion()
     run_publish(api, now=NOW)
@@ -399,32 +418,92 @@ def test_deleted_and_archived_quotes_skipped_without_book_reads():
     assert quotes[0].book_id == id_(200)
 
 
-def test_only_selected_book_is_read(monkeypatch):
+def test_only_selected_quote_and_book_are_read(monkeypatch):
     api = FakeNotion()
     api.quotes = [page(make_quote(i)) for i in (1, 2, 3)]
     api.quotes[1]["properties"]["书籍"] = {"relation": [{"id": id_(201)}]}
     calls = []
 
-    async def read_book(book_id):
-        calls.append(book_id)
+    async def read_page(page_id):
+        calls.append(page_id)
+        if page_id == id_(2):
+            return next(row for row in api.quotes if row["id"] == page_id)
         return {
-            "id": book_id,
-            "url": f"https://www.notion.so/{book_id}",
-            "properties": {"书名": {"title": rich_text(f"《书 {book_id}》")}},
+            "id": page_id,
+            "url": f"https://www.notion.so/{page_id}",
+            "properties": {"书名": {"title": rich_text(f"《书 {page_id}》")}},
         }
 
-    api.page = read_book
+    api.page = read_page
     monkeypatch.setattr(
         "qotd.publisher.choose_quote",
         lambda candidates, _history: (next(c for c in candidates if c.id == id_(2)), 1),
     )
     result = run_publish(api, CONFIG, now=NOW)
     assert result["quote"] == "金句 2"
-    assert calls == [id_(201)]
+    assert set(calls) == {id_(2), id_(201)}
+    snapshot = json.loads(plain(api.records[0]["properties"]["展示快照"]["rich_text"]))
+    assert snapshot["context"] == "完整原文 2"
+    assert snapshot["source_label"] == "读书讲解稿 · 第1节第2段"
     assert (
         api.records[0]["blocks"][1]["quote"]["rich_text"][-1]["text"]["content"]
         == f"《书 {id_(201)}》"
     )
+    assert plain(api.records[0]["blocks"][3]["paragraph"]["rich_text"]) == "完整原文 2"
+
+
+@pytest.mark.parametrize("change", ["archived", "disabled", "book", "id"])
+def test_selected_quote_changed_after_query_stops_before_write(monkeypatch, change):
+    """分页抽选之后再次读取金句，数据变化时不保存混合快照。"""
+    api = FakeNotion()
+    original_page = api.page
+
+    async def changed_page(page_id):
+        row = await original_page(page_id)
+        if page_id == id_(1):
+            if change == "archived":
+                row["archived"] = True
+            elif change == "disabled":
+                row["properties"]["参与轮换"]["checkbox"] = False
+            elif change == "book":
+                row["properties"]["书籍"]["relation"] = [{"id": id_(201)}]
+            else:
+                row["id"] = id_(9)
+        return row
+
+    api.page = changed_page
+    monkeypatch.setattr(
+        "qotd.publisher.choose_quote",
+        lambda candidates, _history: (next(c for c in candidates if c.id == id_(1)), 1),
+    )
+    with pytest.raises(PublicationError, match="查询后已变更"):
+        run_publish(api, CONFIG, now=NOW)
+    assert api.creates == 0
+    assert api.home is None
+
+
+def test_selected_quote_and_book_reads_overlap(monkeypatch):
+    """所选金句与书籍是独立页面读取，可同时等待 Notion 响应。"""
+    api = FakeNotion()
+    original_page = api.page
+    started = set()
+    ready = asyncio.Event()
+
+    async def gated_page(page_id):
+        started.add(page_id)
+        if len(started) == 2:
+            ready.set()
+        await asyncio.wait_for(ready.wait(), timeout=2)
+        return await original_page(page_id)
+
+    api.page = gated_page
+    monkeypatch.setattr(
+        "qotd.publisher.choose_quote",
+        lambda candidates, _history: (next(c for c in candidates if c.id == id_(1)), 1),
+    )
+    run_publish(api, CONFIG, now=NOW)
+    assert started == {id_(1), id_(200)}
+    assert api.quote_reads == api.book_reads == 1
 
 
 def test_selected_book_read_failure_stops_before_write(monkeypatch):
@@ -433,8 +512,8 @@ def test_selected_book_read_failure_stops_before_write(monkeypatch):
     api.quotes[1]["properties"]["书籍"] = {"relation": [{"id": id_(201)}]}
     calls = []
 
-    async def read_book(book_id):
-        calls.append(book_id)
+    async def read_book(page_id):
+        calls.append(page_id)
         raise PublicationError("书籍读取失败")
 
     api.page = read_book
@@ -444,7 +523,7 @@ def test_selected_book_read_failure_stops_before_write(monkeypatch):
     )
     with pytest.raises(PublicationError, match="书籍读取失败"):
         run_publish(api, CONFIG, now=NOW)
-    assert calls == [id_(201)]
+    assert set(calls) == {id_(2), id_(201)}
     assert api.creates == 0
     assert api.home is None
 

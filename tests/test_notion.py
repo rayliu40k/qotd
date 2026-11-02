@@ -43,10 +43,12 @@ def children():
 
 def test_query_preserves_filter_across_pages():
     requests = []
+    urls = []
 
     def handler(request):
         body = json.loads(request.content)
         requests.append(body)
+        urls.append(request.url)
         second = len(requests) > 1
         return httpx.Response(
             200,
@@ -58,9 +60,10 @@ def test_query_preserves_filter_across_pages():
         )
 
     filter_ = {"property": "参与轮换", "checkbox": {"equals": True}}
-    assert len(invoke(api(handler), "query", "source", filter_)) == 2
+    assert len(invoke(api(handler), "query", "source", filter_, filter_properties=["书籍"])) == 2
     assert requests[1]["start_cursor"] == "cursor"
     assert all(request["filter"] == filter_ for request in requests)
+    assert all(url.params.get_list("filter_properties") == ["书籍"] for url in urls)
 
 
 def test_children_paginate():
@@ -141,7 +144,7 @@ def test_layout_changes_stop_before_any_mutation(change):
     assert methods == ["GET"]
 
 
-def test_home_updates_only_owned_blocks_and_date_last():
+def test_home_skips_unchanged_spacers_and_date_last():
     rows = children()
     writes = []
 
@@ -152,11 +155,31 @@ def test_home_updates_only_owned_blocks_and_date_last():
         return httpx.Response(200, json={})
 
     invoke(api(handler), "update_home", "owned", rows)
-    assert len(writes) == 6
-    assert [path for path, _ in writes] == [f"/v1/blocks/slot{i}" for i in (1, 2, 3, 4, 5, 0)]
+    assert len(writes) == 4
+    assert [path for path, _ in writes] == [f"/v1/blocks/slot{i}" for i in (1, 3, 5, 0)]
 
 
-def test_existing_daily_record_updates_properties_and_all_blocks():
+@pytest.mark.parametrize("old_color", ["gray", None])
+def test_spacer_with_different_or_unknown_color_is_written(old_color):
+    """留白颜色不同或未返回时保守写入，不跳过无法确认的样式。"""
+    rows = children()
+    if old_color is None:
+        del rows[2]["paragraph"]["color"]
+    else:
+        rows[2]["paragraph"]["color"] = old_color
+    writes = []
+
+    def handler(request):
+        if request.method == "GET":
+            return httpx.Response(200, json={"results": rows, "has_more": False})
+        writes.append(request.url.path)
+        return httpx.Response(200, json={})
+
+    invoke(api(handler), "update_home", "owned", children())
+    assert writes == [f"/v1/blocks/slot{i}" for i in (1, 2, 3, 5, 0)]
+
+
+def test_existing_daily_record_updates_properties_and_changed_blocks():
     rows = children()
     writes = []
 
@@ -169,7 +192,7 @@ def test_existing_daily_record_updates_properties_and_all_blocks():
     properties = {"轮次": {"number": 2}, "发布状态": {"select": {"name": "待发布"}}}
     invoke(api(handler), "update_record", "record", properties, rows)
     assert writes[0] == ("/v1/pages/record", {"properties": properties})
-    assert [path for path, _ in writes[1:]] == [f"/v1/blocks/slot{i}" for i in (1, 2, 3, 4, 5, 0)]
+    assert [path for path, _ in writes[1:]] == [f"/v1/blocks/slot{i}" for i in (1, 3, 5, 0)]
 
 
 @pytest.mark.parametrize("method", ["update_home", "update_record"])
@@ -197,12 +220,12 @@ def test_content_blocks_are_serial_and_date_last(method):
         invoke(api(handler), method, *args)
     finally:
         logger.remove(sink)
-    expected = [f"/v1/blocks/slot{i}" for i in (1, 2, 3, 4, 5, 0)]
+    expected = [f"/v1/blocks/slot{i}" for i in (1, 3, 5, 0)]
     if method == "update_record":
         expected.insert(0, "/v1/pages/record")
     assert writes == expected
     assert any("开始顺序更新" in event for event in events)
-    assert any("内容区块顺序更新完成：成功：5" in event for event in events)
+    assert any("实际写入：[1, 3, 5]，跳过：[2, 4]" in event for event in events)
     assert any("日期区块更新完成" in event for event in events)
 
 
@@ -226,11 +249,11 @@ def test_content_failure_stops_at_failed_block_without_writing_date(method):
             invoke(api(handler), method, *args)
     finally:
         logger.remove(sink)
-    expected = [f"/v1/blocks/slot{i}" for i in (1, 2, 3)]
+    expected = [f"/v1/blocks/slot{i}" for i in (1, 3)]
     if method == "update_record":
         expected.insert(0, "/v1/pages/record")
     assert writes == expected
-    assert any("区块顺序更新失败：成功：2，失败区块：3" in event for event in events)
+    assert any("区块顺序更新失败：已写：[1]，已跳过：[2]，失败区块：3" in event for event in events)
     assert not any("日期区块更新完成" in event for event in events)
 
 
@@ -263,7 +286,7 @@ def test_external_conflict_retries_current_block_before_continuing(method):
         invoke(api(handler, sleep=no_sleep), method, *args)
     finally:
         logger.remove(sink)
-    expected = [f"/v1/blocks/slot{i}" for i in (1, 2, 3, 3, 4, 5, 0)]
+    expected = [f"/v1/blocks/slot{i}" for i in (1, 3, 3, 5, 0)]
     if method == "update_record":
         expected.insert(0, "/v1/pages/record")
     assert writes == expected
@@ -292,9 +315,10 @@ def test_persistent_conflict_stops_before_later_blocks_and_date():
 
     with pytest.raises(PublicationError, match="写入冲突"):
         invoke(api(handler, sleep=no_sleep), "update_home", "owned", rows)
-    assert writes == [f"/v1/blocks/slot{i}" for i in (1, 2, 3, 3, 3, 3, 3)]
+    assert writes == [f"/v1/blocks/slot{i}" for i in (1, 3, 3, 3, 3, 3)]
     assert attempts[3] == 5
-    assert attempts[1] == attempts[2] == 1
+    assert attempts[1] == 1
+    assert attempts[2] == 0
 
 
 def test_changed_daily_record_layout_stops_before_property_update():
