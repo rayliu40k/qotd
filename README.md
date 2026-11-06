@@ -58,6 +58,17 @@ uv run qotd republish
 
 重发只读取北京时间当天唯一且状态为“已发布”的记录，不抽新句，也不改变记录 ID、金句关联、轮次或日期。它从金句库重新读取金句和关联书籍，刷新展示快照、每日记录正文及首页六区块。若仅修改了读书笔记，请先让 Codex 同步对应金句库页面。命令失败后可再次运行同一命令；Notion 写入不是事务，失败时页面可能暂时混合新旧内容，应以失败日志和重试后的读回结果为准。
 
+### 更新本机运行版本
+
+开发者更新项目代码后，在运行定时任务的 Mac 上进入项目目录，重新安装本项目并生成 `.venv/bin/qotd` 命令入口：
+
+```sh
+uv sync --locked --reinstall-package notion-qotd
+.venv/bin/qotd --help
+```
+
+`qotd` 入口由 [`pyproject.toml`](pyproject.toml) 中的 `qotd = "qotd.cli:main"` 定义；上面的 `--help` 只检查命令是否可用，不会发布金句。现有 LaunchAgent 使用 `.venv/bin/qotd daily`，因此入口路径不变时无需修改或重新加载 plist。`uv build` 只在 `dist/` 生成安装包，不会更新 `.venv/bin/qotd`，也不会向 Notion 发布内容。
+
 ## 架构设计
 
 ```mermaid
