@@ -189,16 +189,36 @@ class FakeRepublishNotion(FakeNotion):
         super().__init__()
         self.refreshes = 0
         self.fail_refresh = False
+        self.snapshot_writes = 0
+        self.record_slot_writes = []
+        self.home_slot_writes = []
 
-    async def refresh_record(self, id_, snapshot, blocks):
+    async def refresh_record(
+        self, id_, snapshot, blocks, *, rows=None, snapshot_changed=True, changed_indices=None
+    ):
         self.refreshes += 1
         row = next(row for row in self.records if row["id"] == id_)
-        row["properties"]["展示快照"] = {"rich_text": copy.deepcopy(snapshot)}
+        if snapshot_changed:
+            self.snapshot_writes += 1
+            row["properties"]["展示快照"] = {"rich_text": copy.deepcopy(snapshot)}
         if self.fail_refresh:
             self.fail_refresh = False
             row["blocks"][1] = copy.deepcopy(blocks[1])
             raise PublicationError("failed mid-refresh")
-        row["blocks"] = copy.deepcopy(blocks)
+        for index in changed_indices if changed_indices is not None else range(6):
+            self.record_slot_writes.append(index)
+            row["blocks"][index] = copy.deepcopy(blocks[index])
+
+    async def update_home(self, parent, blocks, *, rows=None, changed_indices=None):
+        if changed_indices is None:
+            return await super().update_home(parent, blocks)
+        if self.fail_home:
+            self.fail_home = False
+            self.home[1] = copy.deepcopy(blocks[1])
+            raise PublicationError("failed mid-update")
+        for index in changed_indices:
+            self.home_slot_writes.append(index)
+            self.home[index] = copy.deepcopy(blocks[index])
 
     async def slots(self, parent, label="首页"):
         if parent == CONFIG.managed_block_id:
@@ -233,6 +253,93 @@ def test_republish_refreshes_same_quote_without_reselection(monkeypatch):
     assert api.records[0]["properties"]["发布状态"]["select"]["name"] == "已发布"
     assert plain(api.home[1]["quote"]["rich_text"]).startswith("修正后的金句")
     assert api.records[0]["blocks"] == api.home
+
+
+def test_republish_unchanged_makes_no_writes():
+    api = FakeRepublishNotion()
+    api.quotes = [page(make_quote(1))]
+    run_publish(api, CONFIG, now=NOW)
+    events = []
+    sink = logger.add(lambda message: events.append(str(message)))
+    try:
+        result = run_republish(api)
+    finally:
+        logger.remove(sink)
+
+    assert result["status"] == "unchanged"
+    assert api.refreshes == api.snapshot_writes == 0
+    assert api.record_slot_writes == api.home_slot_writes == []
+    assert any("内容无变化，跳过重发" in event and "写入：0 次" in event for event in events)
+
+
+def test_republish_writes_only_changed_content_and_repairs_home():
+    api = FakeRepublishNotion()
+    api.quotes = [page(make_quote(1))]
+    run_publish(api, CONFIG, now=NOW)
+    api.quotes[0]["properties"]["金句"] = {"title": rich_text("修正")}
+
+    assert run_republish(api)["status"] == "republished"
+    assert api.snapshot_writes == 1
+    assert api.record_slot_writes == [1]
+    assert api.home_slot_writes == [1]
+
+    api.home[3]["paragraph"]["rich_text"] = rich_text("旧上下文")
+    assert run_republish(api)["status"] == "republished"
+    assert api.snapshot_writes == 1
+    assert api.record_slot_writes == [1]
+    assert api.home_slot_writes == [1, 3]
+
+
+def test_republish_independent_readbacks_overlap():
+    """每日记录和首页写后都并行读回独立对象。"""
+
+    class GatedRepublishNotion(FakeRepublishNotion):
+        def __init__(self):
+            super().__init__()
+            self.stage = None
+            self.started = []
+            self.ready = asyncio.Event()
+
+        async def gate(self, label):
+            self.started.append((self.stage, label))
+            if sum(stage == self.stage for stage, _ in self.started) == 2:
+                self.ready.set()
+            await asyncio.wait_for(self.ready.wait(), timeout=2)
+
+        async def refresh_record(self, *args, **kwargs):
+            await super().refresh_record(*args, **kwargs)
+            self.stage = "record"
+            self.ready = asyncio.Event()
+
+        async def update_home(self, *args, **kwargs):
+            await super().update_home(*args, **kwargs)
+            self.stage = "final"
+            self.ready = asyncio.Event()
+
+        async def query(self, source, filter_=None, *, filter_properties=None):
+            if self.stage in ("record", "final"):
+                await self.gate("记录属性")
+            return await super().query(source, filter_, filter_properties=filter_properties)
+
+        async def slots(self, parent, label="首页"):
+            if (self.stage == "record" and parent != CONFIG.managed_block_id) or (
+                self.stage == "final" and parent == CONFIG.managed_block_id
+            ):
+                await self.gate("区块")
+            return await super().slots(parent, label)
+
+    api = GatedRepublishNotion()
+    api.quotes = [page(make_quote(1))]
+    run_publish(api, CONFIG, now=NOW)
+    api.stage = None
+    api.quotes[0]["properties"]["金句"] = {"title": rich_text("修正")}
+    assert run_republish(api)["status"] == "republished"
+    assert api.started == [
+        ("record", "记录属性"),
+        ("record", "区块"),
+        ("final", "区块"),
+        ("final", "记录属性"),
+    ]
 
 
 @pytest.mark.parametrize("failure", ["fail_refresh", "fail_home"])

@@ -215,6 +215,30 @@ def test_refresh_record_only_writes_snapshot_and_existing_blocks():
     assert [path for path, _ in writes[1:]] == [f"/v1/blocks/slot{i}" for i in (1, 3, 5, 0)]
 
 
+def test_republish_writes_only_selected_slots_without_re_reading():
+    """重发复用写前已核验的六区块，只更新指定变化区块。"""
+    rows = children()
+    writes = []
+
+    def handler(request):
+        writes.append(request.url.path)
+        return httpx.Response(200, json={})
+
+    adapter = api(handler)
+
+    async def run():
+        try:
+            await adapter.refresh_record(
+                "record", [], rows, rows=rows, snapshot_changed=False, changed_indices=(3,)
+            )
+            await adapter.update_home("owned", rows, rows=rows, changed_indices=(1,))
+        finally:
+            await adapter.aclose()
+
+    asyncio.run(run())
+    assert writes == ["/v1/blocks/slot3", "/v1/blocks/slot1"]
+
+
 @pytest.mark.parametrize("method", ["update_home", "update_record"])
 def test_content_blocks_are_serial_and_date_last(method):
     """同一页面最多有一个写请求；内容依序写入，日期最后写入。"""

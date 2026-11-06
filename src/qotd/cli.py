@@ -146,14 +146,21 @@ def main():
             else:
                 result = asyncio.run(run_publication(token, config))
         if args.command == "republish":
-            logger.info(
-                "重发成功：日期：{}，记录：{}，金句 ID：{}，金句：{}，首页：{}",
-                result["date"],
-                result["record_id"],
-                result["quote_id"],
-                result["quote"],
-                result["home"],
-            )
+            if result["status"] == "unchanged":
+                logger.info(
+                    "重发无需操作：当天金句内容无变化，未写入 Notion；日期：{}，记录：{}",
+                    result["date"],
+                    result["record_id"],
+                )
+            else:
+                logger.info(
+                    "重发成功：日期：{}，记录：{}，金句 ID：{}，金句：{}，首页：{}",
+                    result["date"],
+                    result["record_id"],
+                    result["quote_id"],
+                    result["quote"],
+                    result["home"],
+                )
         else:
             logger.info(
                 "发布成功：日期：{}，记录：{}，金句：{}，首页：{}",

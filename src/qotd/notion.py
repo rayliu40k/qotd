@@ -225,19 +225,24 @@ class Notion:
         )
         await self._write_slots(rows, blocks, "每日记录")
 
-    async def refresh_record(self, id_, snapshot, blocks):
-        """重发同一金句时只刷新快照和正文，保留已发布状态及轮次。"""
-        rows = await self.slots(id_, "每日记录")
-        await self._call(
-            lambda: self.client.pages.update(
-                page_id=id_, properties={DAILY_SNAPSHOT: {"rich_text": snapshot}}
-            ),
-            "刷新每日记录快照",
-        )
-        await self._write_slots(rows, blocks, "每日记录")
+    async def refresh_record(
+        self, id_, snapshot, blocks, *, rows=None, snapshot_changed=True, changed_indices=None
+    ):
+        """重发时仅写变化的快照和区块，保留已发布状态及轮次。"""
+        if rows is None:
+            rows = await self.slots(id_, "每日记录")
+        if snapshot_changed:
+            await self._call(
+                lambda: self.client.pages.update(
+                    page_id=id_, properties={DAILY_SNAPSHOT: {"rich_text": snapshot}}
+                ),
+                "刷新每日记录快照",
+            )
+        if changed_indices is None or changed_indices:
+            await self._write_slots(rows, blocks, "每日记录", changed_indices=changed_indices)
 
-    async def _write_slots(self, rows, blocks, label):
-        """顺序更新同一页面；跳过已确认相同的留白，并保留 409 重试。"""
+    async def _write_slots(self, rows, blocks, label, *, changed_indices=None):
+        """顺序更新同一页面；重发可指定变化区块，保留 409 重试。"""
 
         def unchanged_spacer(i):
             """只在留白的类型、空内容和颜色均已确认一致时跳过写入。"""
@@ -302,9 +307,11 @@ class Notion:
         )
         # 同一页面不再同时发起写入；某块失败立即停止，避免写入日期与后续发布状态。
         for i in CONTENT_SLOT_INDICES:
-            if unchanged_spacer(i):
+            if (changed_indices is not None and i not in changed_indices) or (
+                changed_indices is None and unchanged_spacer(i)
+            ):
                 skipped.append(i)
-                logger.info("{}区块 {} 已是目标空白样式，跳过写入", label, i)
+                logger.info("{}区块 {} 内容与目标一致，跳过写入", label, i)
                 continue
             try:
                 await write_with_conflict_retry(i)
@@ -320,13 +327,16 @@ class Notion:
                 raise
             written.append(i)
         logger.info(
-            "{}内容区块顺序更新完成：实际写入：{}，跳过：{}，耗时：{:.2f} ms；开始更新日期区块 {}",
+            "{}内容区块顺序更新完成：实际写入：{}，跳过：{}，耗时：{:.2f} ms；核对日期区块 {}",
             label,
             written,
             skipped,
             (perf_counter() - start) * 1000,
             DATE_SLOT_INDEX,
         )
+        if changed_indices is not None and DATE_SLOT_INDEX not in changed_indices:
+            logger.info("{}日期区块内容与目标一致，跳过写入", label)
+            return
         await write_with_conflict_retry(DATE_SLOT_INDEX)
         logger.info(
             "{}日期区块更新完成：区块：{}，本页实际写入：{} 次，跳过：{} 次",
@@ -336,14 +346,16 @@ class Notion:
             len(skipped),
         )
 
-    async def update_home(self, parent, blocks):
+    async def update_home(self, parent, blocks, *, rows=None, changed_indices=None):
         """只更新受管理的六个区块，并在最后写入日期。
 
         日期放在最后，可降低读取者看到新日期配旧金句的时间窗口。
         该操作不是事务；中途失败后下次运行重新抽取并覆盖。
         """
-        rows = await self.slots(parent)
-        await self._write_slots(rows, blocks, "首页")
+        if rows is None:
+            rows = await self.slots(parent)
+        if changed_indices is None or changed_indices:
+            await self._write_slots(rows, blocks, "首页", changed_indices=changed_indices)
 
     async def mark_published(self, id_, status):
         """在首页全部写入成功后，把每日记录更新为配置的完成状态。"""

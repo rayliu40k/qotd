@@ -2,6 +2,7 @@ from pathlib import Path
 from uuid import UUID
 
 import pytest
+from loguru import logger
 
 from qotd import cli
 from qotd.cli import Config, publication_lock
@@ -66,8 +67,6 @@ def test_invalid_page_url_template_fails_before_publish(tmp_path, template):
 
 def test_cli_reports_success_through_logger_without_print(monkeypatch, capsys):
     events = []
-    from loguru import logger
-
     sink = logger.add(lambda message: events.append(str(message)))
     monkeypatch.setattr(cli, "configure_logging", lambda _: None)
     monkeypatch.setattr(cli, "load_dotenv", lambda _: None)
@@ -111,6 +110,7 @@ def test_republish_command_dispatches_without_date(monkeypatch):
     async def fake_run(_token, _config, command="daily"):
         calls.append(command)
         return {
+            "status": "republished",
             "date": "2026-10-17",
             "record_id": "record",
             "quote_id": "quote",
@@ -122,6 +122,27 @@ def test_republish_command_dispatches_without_date(monkeypatch):
     monkeypatch.setattr("sys.argv", ["qotd", "republish"])
     assert cli.main() == 0
     assert calls == ["republish"]
+
+
+def test_republish_unchanged_reports_no_write(monkeypatch):
+    """内容相同时命令成功退出，并明确说明没有执行写入。"""
+    events = []
+    sink = logger.add(lambda message: events.append(str(message)))
+    monkeypatch.setattr(cli, "configure_logging", lambda _: None)
+    monkeypatch.setattr(cli, "load_dotenv", lambda _: None)
+    monkeypatch.setenv("NOTION_TOKEN", "test-token")
+
+    async def fake_run(_token, _config, command="daily"):
+        assert command == "republish"
+        return {"status": "unchanged", "date": "2026-10-17", "record_id": "record"}
+
+    monkeypatch.setattr(cli, "run_publication", fake_run)
+    monkeypatch.setattr("sys.argv", ["qotd", "republish"])
+    try:
+        assert cli.main() == 0
+    finally:
+        logger.remove(sink)
+    assert any("重发无需操作" in event and "未写入 Notion" in event for event in events)
 
 
 def test_missing_config_directory_logs_error_to_current_project(monkeypatch, tmp_path, capsys):

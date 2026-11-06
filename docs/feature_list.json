@@ -230,19 +230,20 @@
     },
     {
       "id": "republish-today-same-quote",
-      "date": "2026-11-06 11:17:53",
+      "date": "2026-11-06 13:31:45",
       "priority": 1,
       "area": "publication",
       "title": "重发当天已发布的同一条金句",
-      "user_visible_behavior": "手动运行 uv run qotd republish，从当天记录关联的金句库页面读取修正内容，刷新快照、每日记录和首页；不重新抽句或改变轮次。",
+      "user_visible_behavior": "手动运行 uv run qotd republish，从当天记录关联的金句库页面读取修正内容，只写变化的快照和区块；完全一致时零写入并说明原因，不重新抽句或改变轮次。",
       "status": "passing",
       "verification": [
         "模拟修正同一金句、退出轮换、部分写入重试和无效记录，核对重发不抽句、不创建记录且保留记录身份与状态。",
         "模拟 Notion 写入请求和六区块读回异常，核对只写快照并沿用顺序写入，读回不一致时报错。",
-        "运行 ./docs/init.sh，确认离线 pytest、Ruff 检查与格式检查通过；核对 daily 回归测试。"
+        "模拟无变化、部分变化和独立读回并行；运行 ./docs/init.sh，确认离线 pytest、Ruff 检查与格式检查通过及 daily 回归测试。"
       ],
       "evidence": [
-        "2026-11-06：离线模拟验证重发保留同一记录 ID、金句关联、轮次和已发布状态，修正后快照与六区块更新；失败后同命令重试、缺失或重复记录、待发布状态、关联损坏、金句归档、跨日和读回异常均有用例。Notion MockTransport 验证只写快照属性并顺序更新区块；CLI 测试验证 republish 独立分流。./docs/init.sh 为 98 passed，Ruff 检查和格式检查通过。"
+        "2026-11-06：离线模拟验证重发保留同一记录 ID、金句关联、轮次和已发布状态，修正后快照与六区块更新；失败后同命令重试、缺失或重复记录、待发布状态、关联损坏、金句归档、跨日和读回异常均有用例。Notion MockTransport 验证只写快照属性并顺序更新区块；CLI 测试验证 republish 独立分流。./docs/init.sh 为 98 passed，Ruff 检查和格式检查通过。",
+        "2026-11-06：重发改为快照及六区块按变化写入，无变化时零写入并明确记录。模拟验证只写变化区块、修复首页漂移、独立读回并行及 CLI 无变化提示；MockTransport 验证跳过无变化区块且不重复读取。./docs/init.sh 为 103 passed，Ruff 检查和格式检查通过。"
       ],
       "notes": "只完成离线验证，未运行真实 Notion 重发。Notion 多次写入不是事务；失败后状态仍是已发布，内容可能暂时混合，需重试或核查。"
     }
