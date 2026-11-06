@@ -1,6 +1,6 @@
 {
   "project": "每日金句（qotd）",
-  "last_updated": "2026-11-02",
+  "last_updated": "2026-11-06",
   "rules": {
     "single_active_feature": true,
     "passing_requires_evidence": true,
@@ -227,6 +227,24 @@
         "2026-11-02：模拟数据验证多页投影、抽中后并发读取、展示快照保留原文、状态变化停止写入、两个空白间隔跳过或保守写入；./docs/init.sh 为 86 passed，Ruff 检查及格式检查通过。"
       ],
       "notes": "未运行真实 Notion 发布；分页仍需完整读取全部候选，响应缩小后的净耗时及空白区块实际跳过数待下一次正常调度的日志确认。"
+    },
+    {
+      "id": "republish-today-same-quote",
+      "date": "2026-11-06 11:17:53",
+      "priority": 1,
+      "area": "publication",
+      "title": "重发当天已发布的同一条金句",
+      "user_visible_behavior": "手动运行 uv run qotd republish，从当天记录关联的金句库页面读取修正内容，刷新快照、每日记录和首页；不重新抽句或改变轮次。",
+      "status": "passing",
+      "verification": [
+        "模拟修正同一金句、退出轮换、部分写入重试和无效记录，核对重发不抽句、不创建记录且保留记录身份与状态。",
+        "模拟 Notion 写入请求和六区块读回异常，核对只写快照并沿用顺序写入，读回不一致时报错。",
+        "运行 ./docs/init.sh，确认离线 pytest、Ruff 检查与格式检查通过；核对 daily 回归测试。"
+      ],
+      "evidence": [
+        "2026-11-06：离线模拟验证重发保留同一记录 ID、金句关联、轮次和已发布状态，修正后快照与六区块更新；失败后同命令重试、缺失或重复记录、待发布状态、关联损坏、金句归档、跨日和读回异常均有用例。Notion MockTransport 验证只写快照属性并顺序更新区块；CLI 测试验证 republish 独立分流。./docs/init.sh 为 98 passed，Ruff 检查和格式检查通过。"
+      ],
+      "notes": "只完成离线验证，未运行真实 Notion 重发。Notion 多次写入不是事务；失败后状态仍是已发布，内容可能暂时混合，需重试或核查。"
     }
   ]
 }

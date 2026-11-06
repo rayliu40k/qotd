@@ -15,6 +15,7 @@ from qotd.models import PublicationError, Quote, choose_quote, plain, rich_text
 from qotd.notion import UncertainCreate
 from qotd.publisher import prepare_candidates, publish, record_properties
 from qotd.render import SLOT_TYPES, render
+from qotd.republish import republish
 
 
 def run_publish(api, config=None, **kwargs):
@@ -179,6 +180,123 @@ class FakeNotion:
             raise PublicationError("failed status write")
         row = next(row for row in self.records if row["id"] == id_)
         row["properties"]["发布状态"] = {"select": {"name": status}}
+
+
+class FakeRepublishNotion(FakeNotion):
+    """重发模拟只开放已发布记录的快照刷新与六区块读回。"""
+
+    def __init__(self):
+        super().__init__()
+        self.refreshes = 0
+        self.fail_refresh = False
+
+    async def refresh_record(self, id_, snapshot, blocks):
+        self.refreshes += 1
+        row = next(row for row in self.records if row["id"] == id_)
+        row["properties"]["展示快照"] = {"rich_text": copy.deepcopy(snapshot)}
+        if self.fail_refresh:
+            self.fail_refresh = False
+            row["blocks"][1] = copy.deepcopy(blocks[1])
+            raise PublicationError("failed mid-refresh")
+        row["blocks"] = copy.deepcopy(blocks)
+
+    async def slots(self, parent, label="首页"):
+        if parent == CONFIG.managed_block_id:
+            return copy.deepcopy(self.home)
+        return copy.deepcopy(next(row["blocks"] for row in self.records if row["id"] == parent))
+
+
+def run_republish(api, **kwargs):
+    """固定北京时间，在模拟 Notion 上运行一次当天重发。"""
+    return asyncio.run(republish(api, CONFIG, clock=lambda: NOW, **kwargs))
+
+
+def test_republish_refreshes_same_quote_without_reselection(monkeypatch):
+    api = FakeRepublishNotion()
+    api.quotes = [page(make_quote(1))]
+    first = run_publish(api, CONFIG, now=NOW)
+    old_round = api.records[0]["properties"]["轮次"]
+    api.quotes[0]["properties"]["金句"] = {"title": rich_text("修正后的金句")}
+    api.quotes[0]["properties"]["原文"] = {"rich_text": rich_text("修正后的完整原文")}
+    api.quotes[0]["properties"]["参与轮换"] = {"checkbox": False}
+    monkeypatch.setattr("qotd.publisher.choose_quote", lambda *_: pytest.fail("重发不得抽句"))
+    quote_queries = len(api.quote_query_properties)
+
+    result = run_republish(api)
+
+    assert result["record_id"] == first["record_id"]
+    assert result["quote_id"] == id_(1)
+    assert result["quote"] == "修正后的金句"
+    assert len(api.records) == api.creates == 1
+    assert len(api.quote_query_properties) == quote_queries
+    assert api.records[0]["properties"]["轮次"] == old_round
+    assert api.records[0]["properties"]["发布状态"]["select"]["name"] == "已发布"
+    assert plain(api.home[1]["quote"]["rich_text"]).startswith("修正后的金句")
+    assert api.records[0]["blocks"] == api.home
+
+
+@pytest.mark.parametrize("failure", ["fail_refresh", "fail_home"])
+def test_republish_can_retry_partial_write_without_changing_quote(failure):
+    api = FakeRepublishNotion()
+    api.quotes = [page(make_quote(1))]
+    run_publish(api, CONFIG, now=NOW)
+    api.quotes[0]["properties"]["金句"] = {"title": rich_text("改正")}
+    setattr(api, failure, True)
+    with pytest.raises(PublicationError):
+        run_republish(api)
+    assert api.records[0]["properties"]["发布状态"]["select"]["name"] == "已发布"
+    assert run_republish(api)["quote_id"] == id_(1)
+    assert api.records[0]["blocks"] == api.home
+
+
+@pytest.mark.parametrize("problem", ["missing", "duplicate", "pending", "mismatch", "archived"])
+def test_republish_rejects_invalid_target_before_write(problem):
+    api = FakeRepublishNotion()
+    api.quotes = [page(make_quote(1))]
+    run_publish(api, CONFIG, now=NOW)
+    old_home = copy.deepcopy(api.home)
+    if problem == "missing":
+        api.records.clear()
+    elif problem == "duplicate":
+        api.records.append(copy.deepcopy(api.records[0]))
+    elif problem == "pending":
+        api.records[0]["properties"]["发布状态"] = {"select": {"name": "待发布"}}
+    elif problem == "mismatch":
+        api.records[0]["properties"]["金句"] = {"relation": [{"id": id_(2)}]}
+    else:
+        api.quotes[0]["archived"] = True
+    with pytest.raises(PublicationError):
+        run_republish(api)
+    assert api.refreshes == 0
+    assert api.home == old_home
+
+
+def test_republish_rejects_home_readback_mismatch():
+    api = FakeRepublishNotion()
+    api.quotes = [page(make_quote(1))]
+    run_publish(api, CONFIG, now=NOW)
+    api.quotes[0]["properties"]["金句"] = {"title": rich_text("修正")}
+    original_slots = api.slots
+
+    async def stale_home(parent, label="首页"):
+        rows = await original_slots(parent, label)
+        if parent == CONFIG.managed_block_id and api.refreshes:
+            rows[1]["quote"]["rich_text"][0]["text"]["content"] = "旧内容"
+        return rows
+
+    api.slots = stale_home
+    with pytest.raises(PublicationError, match="读回不一致"):
+        run_republish(api)
+
+
+def test_republish_stops_if_beijing_date_changes_before_write():
+    api = FakeRepublishNotion()
+    api.quotes = [page(make_quote(1))]
+    run_publish(api, CONFIG, now=NOW)
+    times = iter([NOW, NOW + timedelta(days=1)])
+    with pytest.raises(PublicationError, match="日期已变化"):
+        asyncio.run(republish(api, CONFIG, clock=lambda: next(times)))
+    assert api.refreshes == 0
 
 
 def test_publication_timing_is_written_to_daily_log(tmp_path):

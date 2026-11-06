@@ -1,4 +1,4 @@
-"""提供 ``qotd daily`` 命令，按北京时间发布当天金句。
+"""提供 ``qotd daily`` 和 ``qotd republish`` 命令。
 
 此模块加载 Notion 配置和本地密钥，并用进程锁避免同一台电脑并发发布。
 所有运行结果都经 Loguru 输出到控制台和日志文件。
@@ -22,6 +22,7 @@ from .logging_setup import configure_logging
 from .models import PublicationError, canonical_id
 from .notion import Notion
 from .publisher import publish
+from .republish import republish
 from .settings import (
     DAILY_DATA_SOURCE_ID,
     HOME_PAGE_ID,
@@ -97,21 +98,25 @@ def publication_lock(home_id):
             fcntl.flock(handle, fcntl.LOCK_UN)
 
 
-async def run_publication(token: str, config: Config):
-    """在同一事件循环中完成发布，并始终关闭异步 Notion 客户端。"""
+async def run_publication(token: str, config: Config, command: str = "daily"):
+    """在同一事件循环中完成所选发布命令，并关闭异步 Notion 客户端。"""
     api = Notion(token)
     try:
+        if command == "republish":
+            return await republish(api, config)
         return await publish(api, config)
     finally:
         await api.aclose()
 
 
 def main():
-    """运行每日发布并以日志报告结果，成功返回零状态码。"""
+    """运行每日发布或当天原句重发，成功返回零状态码。"""
     parser = argparse.ArgumentParser(description="发布 Notion 每日金句")
     commands = parser.add_subparsers(dest="command", required=True)
     daily = commands.add_parser("daily", help="发布北京时间当天的金句")
     daily.add_argument("--config", type=Path, default=Path("qotd.toml"))
+    retry = commands.add_parser("republish", help="重发北京时间当天已发布的同一条金句")
+    retry.add_argument("--config", type=Path, default=Path("qotd.toml"))
     args = parser.parse_args()
     started_at = perf_counter()
     try:
@@ -130,19 +135,36 @@ def main():
         token = os.environ.get("NOTION_TOKEN", "").strip()
         if not token:
             raise PublicationError("请在项目 .env 中配置 NOTION_TOKEN，并在 Notion 授权连接。")
-        logger.info("开始发布：首页：{}", config.home_page_id)
-        with publication_lock(config.home_page_id):
-            result = asyncio.run(run_publication(token, config))
         logger.info(
-            "发布成功：日期：{}，记录：{}，金句：{}，首页：{}",
-            result["date"],
-            result["record_id"],
-            result["quote"],
-            result["home"],
+            "开始{}：首页：{}",
+            "重发" if args.command == "republish" else "发布",
+            config.home_page_id,
         )
+        with publication_lock(config.home_page_id):
+            if args.command == "republish":
+                result = asyncio.run(run_publication(token, config, args.command))
+            else:
+                result = asyncio.run(run_publication(token, config))
+        if args.command == "republish":
+            logger.info(
+                "重发成功：日期：{}，记录：{}，金句 ID：{}，金句：{}，首页：{}",
+                result["date"],
+                result["record_id"],
+                result["quote_id"],
+                result["quote"],
+                result["home"],
+            )
+        else:
+            logger.info(
+                "发布成功：日期：{}，记录：{}，金句：{}，首页：{}",
+                result["date"],
+                result["record_id"],
+                result["quote"],
+                result["home"],
+            )
         return 0
     except (PublicationError, OSError) as error:
-        logger.error("发布失败：{}", str(error))
+        logger.error("{}失败：{}", "重发" if args.command == "republish" else "发布", str(error))
         return 1
     except Exception as error:
         # 意外异常只记录类型，避免 SDK 异常携带请求头或密钥进入日志。
@@ -150,7 +172,11 @@ def main():
         return 1
     finally:
         # 从参数解析完成到命令退出统一计时，成功或失败均记录总耗时。
-        logger.info("发布总耗时：{:.2f} ms", (perf_counter() - started_at) * 1000)
+        logger.info(
+            "{}总耗时：{:.2f} ms",
+            "重发" if args.command == "republish" else "发布",
+            (perf_counter() - started_at) * 1000,
+        )
 
 
 if __name__ == "__main__":

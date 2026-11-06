@@ -101,6 +101,29 @@ def test_cli_reports_success_through_logger_without_print(monkeypatch, capsys):
         logger.remove(sink)
 
 
+def test_republish_command_dispatches_without_date(monkeypatch):
+    """手动重发进入独立分支；定时 daily 的入口保持原样。"""
+    calls = []
+    monkeypatch.setattr(cli, "configure_logging", lambda _: None)
+    monkeypatch.setattr(cli, "load_dotenv", lambda _: None)
+    monkeypatch.setenv("NOTION_TOKEN", "test-token")
+
+    async def fake_run(_token, _config, command="daily"):
+        calls.append(command)
+        return {
+            "date": "2026-10-17",
+            "record_id": "record",
+            "quote_id": "quote",
+            "quote": "修正",
+            "home": "https://notion.so/home",
+        }
+
+    monkeypatch.setattr(cli, "run_publication", fake_run)
+    monkeypatch.setattr("sys.argv", ["qotd", "republish"])
+    assert cli.main() == 0
+    assert calls == ["republish"]
+
+
 def test_missing_config_directory_logs_error_to_current_project(monkeypatch, tmp_path, capsys):
     """配置目录不存在时，仍将最终错误写到当前项目的日志文件。"""
     from datetime import datetime

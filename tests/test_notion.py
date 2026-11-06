@@ -195,6 +195,26 @@ def test_existing_daily_record_updates_properties_and_changed_blocks():
     assert [path for path, _ in writes[1:]] == [f"/v1/blocks/slot{i}" for i in (1, 3, 5, 0)]
 
 
+def test_refresh_record_only_writes_snapshot_and_existing_blocks():
+    """重发保持日期、关联、轮次和发布状态，沿用受保护的顺序写入。"""
+    rows = children()
+    writes = []
+
+    def handler(request):
+        if request.method == "GET":
+            return httpx.Response(200, json={"results": rows, "has_more": False})
+        writes.append((request.url.path, json.loads(request.content)))
+        return httpx.Response(200, json={})
+
+    snapshot = [{"type": "text", "text": {"content": "修正"}}]
+    invoke(api(handler), "refresh_record", "record", snapshot, rows)
+    assert writes[0] == (
+        "/v1/pages/record",
+        {"properties": {"展示快照": {"rich_text": snapshot}}},
+    )
+    assert [path for path, _ in writes[1:]] == [f"/v1/blocks/slot{i}" for i in (1, 3, 5, 0)]
+
+
 @pytest.mark.parametrize("method", ["update_home", "update_record"])
 def test_content_blocks_are_serial_and_date_last(method):
     """同一页面最多有一个写请求；内容依序写入，日期最后写入。"""

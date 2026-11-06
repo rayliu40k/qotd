@@ -20,6 +20,7 @@ from notion_client.helpers import async_collect_paginated_api
 from .models import PublicationError, canonical_id
 from .render import CONTENT_SLOT_INDICES, DATE_SLOT_INDEX, SLOT_TYPES
 from .settings import (
+    DAILY_SNAPSHOT,
     DAILY_STATUS,
     NOTION_CONFLICT_RETRY_BASE_SECONDS,
     NOTION_MAX_ATTEMPTS,
@@ -221,6 +222,17 @@ class Notion:
         await self._call(
             lambda: self.client.pages.update(page_id=id_, properties=properties),
             "覆盖每日记录属性",
+        )
+        await self._write_slots(rows, blocks, "每日记录")
+
+    async def refresh_record(self, id_, snapshot, blocks):
+        """重发同一金句时只刷新快照和正文，保留已发布状态及轮次。"""
+        rows = await self.slots(id_, "每日记录")
+        await self._call(
+            lambda: self.client.pages.update(
+                page_id=id_, properties={DAILY_SNAPSHOT: {"rich_text": snapshot}}
+            ),
+            "刷新每日记录快照",
         )
         await self._write_slots(rows, blocks, "每日记录")
 
